@@ -91,7 +91,8 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 				return
 			case <-ticker.C:
 				op.mu.Lock()
-				err := WriteMessage(op.w, PeerMessage{Version: 1, Type: MsgTypeHeartbeat})
+				hbPayload, _ := json.Marshal(wireHeartbeat{Op: wireOpHeartbeat})
+				err := WriteMessage(op.w, PeerMessage{Version: 1, Type: MsgTypeHeartbeat, Payload: hbPayload})
 				if err == nil {
 					err = op.w.Flush()
 				}

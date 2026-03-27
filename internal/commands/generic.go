@@ -73,14 +73,8 @@ func cmdPTTL(ctx *CommandContext) error {
 	if len(ctx.Args) != 2 {
 		return writeErr(ctx.Writer, argErr("PTTL"))
 	}
-	sec := ctx.Store.TTL(bytesToStr(ctx.Args[1]))
-	if sec == -2 {
-		return writeInt(ctx.Writer, -2)
-	}
-	if sec == -1 {
-		return writeInt(ctx.Writer, -1)
-	}
-	return writeInt(ctx.Writer, sec*1000)
+	ms := ctx.Store.TTLMs(bytesToStr(ctx.Args[1]))
+	return writeInt(ctx.Writer, ms)
 }
 
 func cmdExpire(ctx *CommandContext) error {

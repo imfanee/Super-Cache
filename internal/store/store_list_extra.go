@@ -230,30 +230,45 @@ func (s *Store) LInsert(key string, before bool, pivot, insert []byte) (int, err
 		return 0, fmt.Errorf("linsert: %w", ErrWrongType)
 	}
 	s.touchLRU(sh, key, e)
-	l := e.value.(*list.List)
-	var at *list.Element
-	for el := l.Front(); el != nil; el = el.Next() {
+	oldL := e.value.(*list.List)
+	// Find pivot position in old list.
+	pivotIdx := -1
+	idx := 0
+	for el := oldL.Front(); el != nil; el = el.Next() {
 		if bytes.Equal(el.Value.([]byte), pivot) {
-			at = el
+			pivotIdx = idx
 			break
 		}
+		idx++
 	}
-	if at == nil {
+	if pivotIdx < 0 {
 		return -1, nil
 	}
 	old := e
+	// Clone the list so estimateMem on old entry remains accurate.
+	nl := list.New()
+	idx = 0
 	ins := append([]byte(nil), insert...)
-	if before {
-		l.InsertBefore(ins, at)
-	} else {
-		l.InsertAfter(ins, at)
+	for el := oldL.Front(); el != nil; el = el.Next() {
+		if before && idx == pivotIdx {
+			nl.PushBack(ins)
+		}
+		nl.PushBack(el.Value)
+		if !before && idx == pivotIdx {
+			nl.PushBack(ins)
+		}
+		idx++
 	}
-	ne := &entry{value: l, dtype: TypeList, expiresAt: e.expiresAt}
-	if err := s.ensureMemoryWithRetry(sh, key, estimateMem(key, ne)-estimateMem(key, old)); err != nil {
+	ne := &entry{value: nl, dtype: TypeList, expiresAt: e.expiresAt}
+	evicted, err := s.ensureMemoryWithRetry(sh, key, estimateMem(key, ne)-estimateMem(key, old))
+	if err != nil {
 		return 0, err
 	}
+	if evicted {
+		old = sh.m[key]
+	}
 	s.replaceEntry(sh, key, old, ne)
-	return l.Len(), nil
+	return nl.Len(), nil
 }
 
 // LPushX prepends values only if the key exists and holds a list.
@@ -286,20 +301,29 @@ func (s *Store) listPushX(sh *shard, key string, vals [][]byte, left bool) (int,
 	if e.dtype != TypeList {
 		return 0, fmt.Errorf("list: %w", ErrWrongType)
 	}
-	l := e.value.(*list.List)
 	old := e
+	oldL := e.value.(*list.List)
+	// Clone the list so estimateMem on old entry remains accurate.
+	nl := list.New()
+	for el := oldL.Front(); el != nil; el = el.Next() {
+		nl.PushBack(el.Value)
+	}
 	for _, v := range vals {
 		b := append([]byte(nil), v...)
 		if left {
-			l.PushFront(b)
+			nl.PushFront(b)
 		} else {
-			l.PushBack(b)
+			nl.PushBack(b)
 		}
 	}
-	ne := &entry{value: l, dtype: TypeList, expiresAt: e.expiresAt}
-	if err := s.ensureMemoryWithRetry(sh, key, estimateMem(key, ne)-estimateMem(key, old)); err != nil {
+	ne := &entry{value: nl, dtype: TypeList, expiresAt: e.expiresAt}
+	evicted, err := s.ensureMemoryWithRetry(sh, key, estimateMem(key, ne)-estimateMem(key, old))
+	if err != nil {
 		return 0, err
 	}
+	if evicted {
+		old = sh.m[key]
+	}
 	s.replaceEntry(sh, key, old, ne)
-	return l.Len(), nil
+	return nl.Len(), nil
 }

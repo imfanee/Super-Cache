@@ -71,6 +71,8 @@ func applyReplicatePayload(st *store.Store, p ReplicatePayload) error {
 		}
 		_, err := st.SRem(p.Key, p.Members)
 		return err
+	case "REPLACESET":
+		return st.ReplaceSet(p.Key, p.Members)
 	case "LPUSH":
 		if len(p.Members) == 0 {
 			return nil

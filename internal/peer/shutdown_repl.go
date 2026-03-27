@@ -41,9 +41,6 @@ func (s *Service) FinalizeGracefulShutdown(ctx context.Context, spillPath string
 		if p.replCh == nil {
 			continue
 		}
-		if len(p.replCh) == 0 {
-			continue
-		}
 		if p.cancelSession != nil {
 			p.cancelSession()
 		}
@@ -88,8 +85,11 @@ func (s *Service) FinalizeGracefulShutdown(ctx context.Context, spillPath string
 
 // CloseListener stops accepting new inbound peer connections.
 func (s *Service) CloseListener() {
-	if s.listener != nil {
-		_ = s.listener.Close()
+	s.mu.Lock()
+	ln := s.listener
+	s.mu.Unlock()
+	if ln != nil {
+		_ = ln.Close()
 	}
 }
 

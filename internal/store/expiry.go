@@ -8,7 +8,6 @@ package store
 
 import (
 	"context"
-	"math/rand/v2"
 	"time"
 )
 
@@ -21,27 +20,34 @@ const (
 func runActiveExpiry(ctx context.Context, s *Store) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	watchPruneCounter := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			sampleAllShards(s)
+			// Prune dead watch entries every ~30 seconds (300 ticks * 100ms).
+			watchPruneCounter++
+			if watchPruneCounter >= 300 {
+				watchPruneCounter = 0
+				s.PruneWatch()
+			}
 		}
 	}
 }
 
 func sampleAllShards(s *Store) {
+	const maxResamples = 16 // cap iterations per shard to prevent starvation
 	for si := 0; si < NumShards; si++ {
-		for {
+		for iter := 0; iter < maxResamples; iter++ {
 			expired, checked := sampleOnceShard(s, si)
 			if checked == 0 {
 				break
 			}
-			if float64(expired)/float64(checked) > expiryRepeatRatio {
-				continue
+			if float64(expired)/float64(checked) <= expiryRepeatRatio {
+				break
 			}
-			break
 		}
 	}
 }
@@ -72,13 +78,21 @@ func randomSampleKeys(m map[string]*entry, n int) []string {
 	if len(m) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	if len(keys) <= n {
+	if len(m) <= n {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
 		return keys
 	}
-	rand.Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
-	return keys[:n]
+	// Use map iteration (random order in Go) and collect only n keys to avoid
+	// allocating a slice of all keys and shuffling it on every sample cycle.
+	keys := make([]string, 0, n)
+	for k := range m {
+		keys = append(keys, k)
+		if len(keys) >= n {
+			break
+		}
+	}
+	return keys
 }

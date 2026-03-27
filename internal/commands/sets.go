@@ -293,7 +293,7 @@ func cmdSUnionStore(ctx *CommandContext) error {
 		}
 		return fmt.Errorf("sunionstore: %w", err)
 	}
-	ReplicateSAdd(ctx.Peer, dest, members)
+	ReplicateReplaceSet(ctx.Peer, dest, members)
 	return writeInt(ctx.Writer, int64(len(members)))
 }
 
@@ -337,7 +337,7 @@ func cmdSInterStore(ctx *CommandContext) error {
 		}
 		return fmt.Errorf("sinterstore: %w", err)
 	}
-	ReplicateSAdd(ctx.Peer, dest, members)
+	ReplicateReplaceSet(ctx.Peer, dest, members)
 	return writeInt(ctx.Writer, int64(len(members)))
 }
 
@@ -381,6 +381,6 @@ func cmdSDiffStore(ctx *CommandContext) error {
 		}
 		return fmt.Errorf("sdiffstore: %w", err)
 	}
-	ReplicateSAdd(ctx.Peer, dest, members)
+	ReplicateReplaceSet(ctx.Peer, dest, members)
 	return writeInt(ctx.Writer, int64(len(members)))
 }

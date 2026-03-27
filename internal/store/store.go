@@ -219,7 +219,11 @@ func (s *Store) addMem(delta int64) {
 	if delta == 0 {
 		return
 	}
-	s.mem.Add(delta)
+	newVal := s.mem.Add(delta)
+	// Clamp to zero to prevent negative drift from estimation inaccuracies.
+	if newVal < 0 {
+		s.mem.CompareAndSwap(newVal, 0)
+	}
 }
 
 func (s *Store) isExpired(e *entry) bool {
@@ -322,8 +326,24 @@ func (s *Store) setLocked(sh *shard, key string, val []byte, expiresAt time.Time
 	if had {
 		oldBytes = estimateMem(key, old)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newBytes-oldBytes); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newBytes-oldBytes)
+	if err != nil {
 		return err
+	}
+	if evicted {
+		// Re-read shard state: the mutex was released during eviction.
+		old, had = sh.m[key]
+		if had && s.isExpired(old) {
+			s.purgeEntryLocked(sh, key, old)
+			had = false
+			old = nil
+		}
+		if nx && had {
+			return nil
+		}
+		if xx && !had {
+			return nil
+		}
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return nil
@@ -343,19 +363,23 @@ func (s *Store) evictUntilFits(delta int64) error {
 }
 
 // ensureMemoryWithRetry is called with sh.mu held; it may temporarily unlock to run eviction.
-func (s *Store) ensureMemoryWithRetry(sh *shard, key string, delta int64) error {
+// Returns (evicted, err). When evicted is true the caller must re-read shard state because the
+// mutex was temporarily released and other goroutines may have modified the shard.
+func (s *Store) ensureMemoryWithRetry(sh *shard, key string, delta int64) (bool, error) {
 	if s.maxMemBytes() == 0 || delta <= 0 {
-		return nil
+		return false, nil
 	}
+	evicted := false
 	for s.mem.Load()+delta > int64(s.maxMemBytes()) {
 		sh.mu.Unlock()
 		ok := evictFromStore(s, key)
 		sh.mu.Lock()
+		evicted = true
 		if !ok {
-			return fmt.Errorf("store: %w", ErrOOM)
+			return true, fmt.Errorf("store: %w", ErrOOM)
 		}
 	}
-	return nil
+	return evicted, nil
 }
 
 // SetNX sets key only if it does not exist.
@@ -373,8 +397,20 @@ func (s *Store) SetNX(key string, val []byte, expiresAt time.Time) (bool, error)
 	}
 	ne := &entry{value: append([]byte(nil), val...), dtype: TypeString, expiresAt: expiresAt}
 	delta := estimateMem(key, ne)
-	if err := s.ensureMemoryWithRetry(sh, key, delta); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, delta)
+	if err != nil {
 		return false, err
+	}
+	if evicted {
+		// Re-check: mutex was released during eviction.
+		old, had = sh.m[key]
+		if had && s.isExpired(old) {
+			s.purgeEntryLocked(sh, key, old)
+			had = false
+		}
+		if had {
+			return false, nil
+		}
 	}
 	s.replaceEntry(sh, key, nil, ne)
 	return true, nil
@@ -395,8 +431,18 @@ func (s *Store) SetXX(key string, val []byte, expiresAt time.Time) (bool, error)
 	ne := &entry{value: append([]byte(nil), val...), dtype: TypeString, expiresAt: expiresAt}
 	newB := estimateMem(key, ne)
 	oldB := estimateMem(key, old)
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return false, err
+	}
+	if evicted {
+		old, had = sh.m[key]
+		if !had || s.isExpired(old) {
+			if had {
+				s.purgeEntryLocked(sh, key, old)
+			}
+			return false, nil
+		}
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return true, nil
@@ -426,8 +472,12 @@ func (s *Store) GetSet(key string, val []byte, expiresAt time.Time) ([]byte, boo
 	if had {
 		oldB = estimateMem(key, old)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return nil, false, err
+	}
+	if evicted {
+		old = sh.m[key]
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return prev, true, nil
@@ -446,8 +496,22 @@ func (s *Store) Append(key string, tail []byte) (int64, error) {
 	}
 	if !ok {
 		ne := &entry{value: append([]byte(nil), tail...), dtype: TypeString}
-		if err := s.ensureMemoryWithRetry(sh, key, estimateMem(key, ne)); err != nil {
+		evicted, err := s.ensureMemoryWithRetry(sh, key, estimateMem(key, ne))
+		if err != nil {
 			return 0, err
+		}
+		if evicted {
+			if cur, exists := sh.m[key]; exists && !s.isExpired(cur) {
+				// Key appeared during eviction; fall through to append path
+				if cur.dtype != TypeString {
+					return 0, fmt.Errorf("append: %w", ErrWrongType)
+				}
+				oldVal := cur.value.([]byte)
+				newVal := append(append([]byte(nil), oldVal...), tail...)
+				ne = &entry{value: newVal, dtype: TypeString, expiresAt: cur.expiresAt}
+				s.replaceEntry(sh, key, cur, ne)
+				return int64(len(newVal)), nil
+			}
 		}
 		s.replaceEntry(sh, key, nil, ne)
 		return int64(len(tail)), nil
@@ -460,8 +524,12 @@ func (s *Store) Append(key string, tail []byte) (int64, error) {
 	ne := &entry{value: newVal, dtype: TypeString, expiresAt: e.expiresAt}
 	newB := estimateMem(key, ne)
 	oldB := estimateMem(key, e)
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return 0, err
+	}
+	if evicted {
+		e = sh.m[key]
 	}
 	s.replaceEntry(sh, key, e, ne)
 	return int64(len(newVal)), nil
@@ -516,8 +584,12 @@ func (s *Store) incrBy(key string, delta int64) (int64, error) {
 	if ok {
 		oldB = estimateMem(key, e)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
-		return 0, err
+	evicted, err2 := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err2 != nil {
+		return 0, err2
+	}
+	if evicted {
+		e = sh.m[key]
 	}
 	s.replaceEntry(sh, key, e, ne)
 	return next, nil
@@ -697,7 +769,7 @@ func (s *Store) Del(keys []string) int {
 		e, ok := sh.m[key]
 		if ok && s.isExpired(e) {
 			s.purgeEntryLocked(sh, key, e)
-			n++
+			// Don't count expired keys — they are logically already gone.
 			sh.mu.Unlock()
 			continue
 		}
@@ -1017,6 +1089,29 @@ func (s *Store) Persist(key string) (bool, error) {
 	ne.expiresAt = time.Time{}
 	s.replaceEntry(sh, key, old, ne)
 	return true, nil
+}
+
+// TTLMs returns milliseconds to live, -1 if no TTL, -2 if missing.
+func (s *Store) TTLMs(key string) int64 {
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := sh.m[key]
+	if !ok || s.isExpired(e) {
+		if ok {
+			s.purgeEntryLocked(sh, key, e)
+		}
+		return -2
+	}
+	if e.expiresAt.IsZero() {
+		return -1
+	}
+	d := time.Until(e.expiresAt)
+	if d <= 0 {
+		s.purgeEntryLocked(sh, key, e)
+		return -2
+	}
+	return d.Milliseconds()
 }
 
 // MemBytes returns approximate memory usage.

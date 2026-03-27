@@ -201,8 +201,8 @@ func cmdTime(ctx *CommandContext) error {
 	sec := now.Unix()
 	usec := int64(now.Nanosecond() / 1000)
 	arr := []resp.Value{
-		{Type: ':', Integer: sec},
-		{Type: ':', Integer: usec},
+		{Type: '$', Str: fmt.Sprintf("%d", sec)},
+		{Type: '$', Str: fmt.Sprintf("%d", usec)},
 	}
 	if err := ctx.Writer.WriteArray(arr); err != nil {
 		return fmt.Errorf("time write: %w", err)

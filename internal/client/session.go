@@ -51,6 +51,10 @@ type Session struct {
 	outMu sync.Mutex
 }
 
+// Lock serializes writes to the RESP writer, protecting against concurrent pub/sub pushes.
+func (s *Session) Lock()   { s.outMu.Lock() }
+func (s *Session) Unlock() { s.outMu.Unlock() }
+
 // NewSession constructs a session with empty subscription maps.
 func NewSession(id int64, c net.Conn, p *resp.Parser, w *resp.Writer) *Session {
 	return &Session{

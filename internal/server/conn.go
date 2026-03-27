@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"crypto/tls"
+
 	"github.com/supercache/supercache/internal/client"
 	"github.com/supercache/supercache/internal/commands"
 	"github.com/supercache/supercache/internal/resp"
@@ -40,6 +42,12 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 	wr := resp.NewWriter(c)
 	sid := s.sessionSeq.Add(1)
 	sess := client.NewSession(sid, c, pr, wr)
+	// Clean up pub/sub subscriptions when this connection closes to prevent memory leaks.
+	defer func() {
+		if s.pubsub != nil {
+			s.pubsub.RemoveSessionFromAll(sess)
+		}
+	}()
 
 	cmdCtx := &commands.CommandContext{
 		Store:    s.store,
@@ -67,22 +75,29 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 			return
 		}
 		if !s.clientReady.Load() {
+			sess.Lock()
 			_ = wr.WriteError("LOADING Super-Cache is loading the dataset in memory")
 			_ = wr.Flush()
+			sess.Unlock()
 			continue
 		}
+		sess.Lock()
 		if err := s.dispatch(cmdCtx, v); err != nil {
+			sess.Unlock()
 			if errors.Is(err, client.ErrQuit) {
 				return
 			}
 			return
 		}
+		sess.Unlock()
 		sess.LastCmdAt = time.Now()
 		sess.CmdCount++
 		s.stats.commandExecuted()
 		if s.shuttingDown.Load() {
+			sess.Lock()
 			_ = wr.WriteError("LOADING server is shutting down")
 			_ = wr.Flush()
+			sess.Unlock()
 			return
 		}
 	}
@@ -90,6 +105,19 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 
 func gracefulCloseConn(c net.Conn) {
 	if c == nil {
+		return
+	}
+	// For TLS connections, use CloseWrite for a clean close-notify before full close.
+	if tc, ok := c.(*tls.Conn); ok {
+		_ = tc.CloseWrite()
+		_ = tc.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		buf := make([]byte, 512)
+		for {
+			if _, err := tc.Read(buf); err != nil {
+				break
+			}
+		}
+		_ = tc.Close()
 		return
 	}
 	tcp, ok := c.(*net.TCPConn)
@@ -111,6 +139,8 @@ func gracefulCloseConn(c net.Conn) {
 }
 
 func (s *Server) dispatch(ctx *commands.CommandContext, v resp.Value) error {
+	// Refresh config pointer on each command so hot reloads take effect immediately.
+	ctx.Config = s.config()
 	args, err := commands.ValueToArgs(v)
 	if err != nil {
 		return fmt.Errorf("value to args: %w", err)
@@ -142,6 +172,10 @@ func (s *Server) dispatch(ctx *commands.CommandContext, v resp.Value) error {
 		case "EXEC", "DISCARD":
 			return s.registry.Dispatch(ctx, v)
 		default:
+			const maxMultiQueueLen = 10000
+			if len(ctx.Session.MultiQueue) >= maxMultiQueueLen {
+				return writeErrStr(ctx.Writer, "ERR MULTI queue length exceeded")
+			}
 			ctx.Session.MultiQueue = append(ctx.Session.MultiQueue, v)
 			return writeQueued(ctx.Writer)
 		}
