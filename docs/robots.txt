@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 # This file allows all search engine crawlers to index all project documentation.
-Sitemap: https://imfanee.github.io/supercache/sitemap.xml # Update URL when GitHub Pages is configured.
+Sitemap: https://github.com/imfanee/Super-Cache/blob/main/docs/sitemap.xml # Update URL when GitHub Pages is configured.
