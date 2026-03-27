@@ -21,3 +21,35 @@ func (s *Store) bumpWatchKey(key string) {
 	}
 	s.watch[key]++
 }
+
+// PruneWatch removes watch entries for keys that no longer exist in the store.
+// Called periodically (e.g. from active expiry) to prevent unbounded growth.
+func (s *Store) PruneWatch() {
+	s.watchMu.Lock()
+	// Snapshot the keys to check.
+	keys := make([]string, 0, len(s.watch))
+	for k := range s.watch {
+		keys = append(keys, k)
+	}
+	s.watchMu.Unlock()
+
+	// Check which keys still exist (acquires shard locks one at a time).
+	dead := make([]string, 0)
+	for _, k := range keys {
+		sh := s.shardFor(k)
+		sh.mu.RLock()
+		_, exists := sh.m[k]
+		sh.mu.RUnlock()
+		if !exists {
+			dead = append(dead, k)
+		}
+	}
+
+	if len(dead) > 0 {
+		s.watchMu.Lock()
+		for _, k := range dead {
+			delete(s.watch, k)
+		}
+		s.watchMu.Unlock()
+	}
+}

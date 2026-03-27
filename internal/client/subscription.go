@@ -26,10 +26,15 @@ func NewSubscriptionManager() *SubscriptionManager {
 	}
 }
 
-// Subscribe adds a client session to an exact channel name.
+// Subscribe adds a client session to an exact channel name (idempotent per session).
 func (m *SubscriptionManager) Subscribe(ch string, s *Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, existing := range m.chans[ch] {
+		if existing == s {
+			return
+		}
+	}
 	m.chans[ch] = append(m.chans[ch], s)
 }
 
@@ -43,10 +48,15 @@ func (m *SubscriptionManager) Unsubscribe(ch string, s *Session) {
 	}
 }
 
-// PSubscribe registers a pattern subscription.
+// PSubscribe registers a pattern subscription (idempotent per session).
 func (m *SubscriptionManager) PSubscribe(pat string, s *Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, existing := range m.psubs[pat] {
+		if existing == s {
+			return
+		}
+	}
 	m.psubs[pat] = append(m.psubs[pat], s)
 }
 

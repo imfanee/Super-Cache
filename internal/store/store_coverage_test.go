@@ -731,7 +731,8 @@ func TestGetSetAppendWrongType(t *testing.T) {
 func TestDelAndExistsExpired(t *testing.T) {
 	s := newTestStore(t)
 	_ = s.Set("ex", []byte("1"), time.Now().Add(-time.Second))
-	if s.Del([]string{"ex"}) != 1 {
+	// Expired keys are logically gone; Del should not count them (Redis semantics).
+	if s.Del([]string{"ex"}) != 0 {
 		t.Fatal()
 	}
 	_ = s.Set("ex2", []byte("1"), time.Now().Add(-time.Second))

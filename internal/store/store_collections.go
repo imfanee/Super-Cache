@@ -8,6 +8,7 @@ package store
 
 import (
 	"container/list"
+	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -27,16 +28,19 @@ func (s *Store) HSet(key string, pairs map[string][]byte) (int, error) {
 		s.purgeEntryLocked(sh, key, e)
 		ok = false
 	}
-	var h map[string][]byte
+	var oldH map[string][]byte
 	var old *entry
 	if ok {
 		if e.dtype != TypeHash {
 			return 0, fmt.Errorf("hset: %w", ErrWrongType)
 		}
-		h = e.value.(map[string][]byte)
+		oldH = e.value.(map[string][]byte)
 		old = e
-	} else {
-		h = make(map[string][]byte)
+	}
+	// Clone the hash so estimateMem on old entry remains accurate.
+	h := make(map[string][]byte, len(oldH)+len(pairs))
+	for k, v := range oldH {
+		h[k] = v
 	}
 	newFields := 0
 	for fk, fv := range pairs {
@@ -55,8 +59,12 @@ func (s *Store) HSet(key string, pairs map[string][]byte) (int, error) {
 	if ok {
 		oldB = estimateMem(key, old)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return 0, err
+	}
+	if evicted {
+		old = sh.m[key]
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return newFields, nil
@@ -125,7 +133,12 @@ func (s *Store) HDel(key string, fields []string) (int, error) {
 	if e.dtype != TypeHash {
 		return 0, fmt.Errorf("hdel: %w", ErrWrongType)
 	}
-	h := e.value.(map[string][]byte)
+	oldH := e.value.(map[string][]byte)
+	// Clone the hash so estimateMem on old entry remains accurate.
+	h := make(map[string][]byte, len(oldH))
+	for k, v := range oldH {
+		h[k] = v
+	}
 	n := 0
 	for _, f := range fields {
 		if _, ok := h[f]; ok {
@@ -192,32 +205,45 @@ func (s *Store) HSetNX(key, field string, val []byte) (int, error) {
 		s.purgeEntryLocked(sh, key, e)
 		ok = false
 	}
-	var h map[string][]byte
 	var old *entry
 	if ok {
 		if e.dtype != TypeHash {
 			return 0, fmt.Errorf("hsetnx: %w", ErrWrongType)
 		}
-		h = e.value.(map[string][]byte)
+		oldH := e.value.(map[string][]byte)
 		old = e
-		if _, exists := h[field]; exists {
+		if _, exists := oldH[field]; exists {
 			return 0, nil
 		}
-	} else {
-		h = make(map[string][]byte)
+		// Clone the hash so estimateMem on old entry remains accurate.
+		h := make(map[string][]byte, len(oldH)+1)
+		for k, v := range oldH {
+			h[k] = v
+		}
+		h[field] = append([]byte(nil), val...)
+		ne := &entry{value: h, dtype: TypeHash, expiresAt: e.expiresAt}
+		newB := estimateMem(key, ne)
+		oldB := estimateMem(key, old)
+		evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+		if err != nil {
+			return 0, err
+		}
+		if evicted {
+			old = sh.m[key]
+		}
+		s.replaceEntry(sh, key, old, ne)
+		return 1, nil
 	}
+	h := make(map[string][]byte)
 	h[field] = append([]byte(nil), val...)
 	ne := &entry{value: h, dtype: TypeHash}
-	if ok {
-		ne.expiresAt = e.expiresAt
-	}
 	newB := estimateMem(key, ne)
-	var oldB int64
-	if ok {
-		oldB = estimateMem(key, old)
-	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB)
+	if err != nil {
 		return 0, err
+	}
+	if evicted {
+		old = sh.m[key]
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return 1, nil
@@ -248,26 +274,28 @@ func (s *Store) listPush(sh *shard, key string, vals [][]byte, left bool) (int, 
 		s.purgeEntryLocked(sh, key, e)
 		ok = false
 	}
-	var l *list.List
 	var old *entry
+	// Build a new list (or clone the existing one) so memory estimation is accurate.
+	nl := list.New()
 	if ok {
 		if e.dtype != TypeList {
 			return 0, fmt.Errorf("list: %w", ErrWrongType)
 		}
-		l = e.value.(*list.List)
 		old = e
-	} else {
-		l = list.New()
+		oldL := e.value.(*list.List)
+		for el := oldL.Front(); el != nil; el = el.Next() {
+			nl.PushBack(el.Value)
+		}
 	}
 	for _, v := range vals {
 		b := append([]byte(nil), v...)
 		if left {
-			l.PushFront(b)
+			nl.PushFront(b)
 		} else {
-			l.PushBack(b)
+			nl.PushBack(b)
 		}
 	}
-	ne := &entry{value: l, dtype: TypeList}
+	ne := &entry{value: nl, dtype: TypeList}
 	if ok {
 		ne.expiresAt = e.expiresAt
 	}
@@ -276,11 +304,15 @@ func (s *Store) listPush(sh *shard, key string, vals [][]byte, left bool) (int, 
 	if ok {
 		oldB = estimateMem(key, old)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return 0, err
 	}
+	if evicted {
+		old = sh.m[key]
+	}
 	s.replaceEntry(sh, key, old, ne)
-	return l.Len(), nil
+	return nl.Len(), nil
 }
 
 func (s *Store) listLenLocked(sh *shard, key string) (int, error) {
@@ -462,16 +494,19 @@ func (s *Store) SAdd(key string, members [][]byte) (int, error) {
 		s.purgeEntryLocked(sh, key, e)
 		ok = false
 	}
-	var st map[string]struct{}
 	var old *entry
+	// Clone the set so estimateMem on old entry remains accurate.
+	var oldSt map[string]struct{}
 	if ok {
 		if e.dtype != TypeSet {
 			return 0, fmt.Errorf("sadd: %w", ErrWrongType)
 		}
-		st = e.value.(map[string]struct{})
+		oldSt = e.value.(map[string]struct{})
 		old = e
-	} else {
-		st = make(map[string]struct{})
+	}
+	st := make(map[string]struct{}, len(oldSt)+len(members))
+	for k := range oldSt {
+		st[k] = struct{}{}
 	}
 	added := 0
 	for _, m := range members {
@@ -490,8 +525,12 @@ func (s *Store) SAdd(key string, members [][]byte) (int, error) {
 	if ok {
 		oldB = estimateMem(key, old)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return 0, err
+	}
+	if evicted {
+		old = sh.m[key]
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return added, nil
@@ -512,7 +551,12 @@ func (s *Store) SRem(key string, members [][]byte) (int, error) {
 	if e.dtype != TypeSet {
 		return 0, fmt.Errorf("srem: %w", ErrWrongType)
 	}
-	st := e.value.(map[string]struct{})
+	oldSt := e.value.(map[string]struct{})
+	// Clone the set so estimateMem on old entry remains accurate.
+	st := make(map[string]struct{}, len(oldSt))
+	for k := range oldSt {
+		st[k] = struct{}{}
+	}
 	n := 0
 	for _, m := range members {
 		k := string(m)
@@ -618,8 +662,12 @@ func (s *Store) ReplaceSet(key string, members [][]byte) error {
 	if had {
 		oldB = estimateMem(key, e)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return err
+	}
+	if evicted {
+		e = sh.m[key]
 	}
 	s.replaceEntry(sh, key, e, ne)
 	return nil
@@ -632,7 +680,14 @@ func matchGlob(pattern, key string) bool {
 }
 
 // Snapshot streams a copy-on-read snapshot of all keys.
+// Deprecated: prefer SnapshotCtx which supports cancellation.
 func (s *Store) Snapshot() <-chan SnapshotEntry {
+	return s.SnapshotCtx(context.Background())
+}
+
+// SnapshotCtx streams a copy-on-read snapshot of all keys, respecting ctx cancellation
+// to prevent goroutine leaks when the consumer disconnects.
+func (s *Store) SnapshotCtx(ctx context.Context) <-chan SnapshotEntry {
 	out := make(chan SnapshotEntry, 1024)
 	go func() {
 		defer close(out)
@@ -648,7 +703,11 @@ func (s *Store) Snapshot() <-chan SnapshotEntry {
 			}
 			sh.mu.Unlock()
 			for _, ent := range batch {
-				out <- ent
+				select {
+				case out <- ent:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
@@ -716,40 +775,40 @@ func (s *Store) applySnapshotEntry(ent SnapshotEntry) error {
 	switch ent.Type {
 	case "string":
 		ne := &entry{value: append([]byte(nil), ent.Value...), dtype: TypeString, expiresAt: exp}
-		if err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
+		if _, err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
 			return err
 		}
-		s.replaceEntry(sh, ent.Key, nil, ne)
+		s.replaceEntry(sh, ent.Key, sh.m[ent.Key], ne)
 	case "hash":
 		h := make(map[string][]byte, len(ent.Fields))
 		for k, v := range ent.Fields {
 			h[k] = append([]byte(nil), v...)
 		}
 		ne := &entry{value: h, dtype: TypeHash, expiresAt: exp}
-		if err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
+		if _, err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
 			return err
 		}
-		s.replaceEntry(sh, ent.Key, nil, ne)
+		s.replaceEntry(sh, ent.Key, sh.m[ent.Key], ne)
 	case "list":
 		l := list.New()
 		for _, b := range ent.Elements {
 			l.PushBack(append([]byte(nil), b...))
 		}
 		ne := &entry{value: l, dtype: TypeList, expiresAt: exp}
-		if err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
+		if _, err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
 			return err
 		}
-		s.replaceEntry(sh, ent.Key, nil, ne)
+		s.replaceEntry(sh, ent.Key, sh.m[ent.Key], ne)
 	case "set":
 		st := make(map[string]struct{}, len(ent.Members))
 		for _, m := range ent.Members {
 			st[string(m)] = struct{}{}
 		}
 		ne := &entry{value: st, dtype: TypeSet, expiresAt: exp}
-		if err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
+		if _, err := s.ensureMemoryWithRetry(sh, ent.Key, estimateMem(ent.Key, ne)); err != nil {
 			return err
 		}
-		s.replaceEntry(sh, ent.Key, nil, ne)
+		s.replaceEntry(sh, ent.Key, sh.m[ent.Key], ne)
 	default:
 		return fmt.Errorf("unknown snapshot type %q: %w", ent.Type, errors.New("invalid snapshot"))
 	}

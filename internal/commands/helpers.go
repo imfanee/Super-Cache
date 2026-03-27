@@ -310,6 +310,18 @@ func ReplicateLSet(rep peer.Replicator, key string, index int64, val []byte) {
 	_ = rep.Replicate(peer.ReplicatePayload{Op: "LSET", Key: key, Cnt: index, Value: append([]byte(nil), val...)})
 }
 
+// ReplicateReplaceSet sends REPLACESET replication (atomic set replacement).
+func ReplicateReplaceSet(rep peer.Replicator, key string, members [][]byte) {
+	if rep == nil {
+		return
+	}
+	cp := make([][]byte, len(members))
+	for i, m := range members {
+		cp[i] = append([]byte(nil), m...)
+	}
+	_ = rep.Replicate(peer.ReplicatePayload{Op: "REPLACESET", Key: key, Members: cp})
+}
+
 // ReplicateLTrim sends LTRIM replication.
 func ReplicateLTrim(rep peer.Replicator, key string, start, stop int64) {
 	if rep == nil {

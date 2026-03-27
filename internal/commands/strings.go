@@ -144,9 +144,9 @@ func cmdSet(ctx *CommandContext) error {
 		exp = time.Now().Add(time.Duration(exMs) * time.Millisecond)
 	}
 	if keepttl {
-		ttl := ctx.Store.TTL(key)
-		if ttl > 0 {
-			exp = time.Now().Add(time.Duration(ttl) * time.Second)
+		ms := ctx.Store.TTLMs(key)
+		if ms > 0 {
+			exp = time.Now().Add(time.Duration(ms) * time.Millisecond)
 		}
 	}
 	if nx && xx {
@@ -391,15 +391,10 @@ func cmdGetEx(ctx *CommandContext) error {
 			haveExp = true
 			i += 2
 		case "PERSIST":
-			ok, err := ctx.Store.Persist(key)
+			_, err := ctx.Store.Persist(key)
 			if err != nil {
 				return fmt.Errorf("getex persist: %w", err)
 			}
-			if !ok {
-				keyspaceMiss(ctx, 1)
-				return writeBulkNil(ctx.Writer)
-			}
-			keyspaceHit(ctx, 1)
 			ReplicatePersist(ctx.Peer, key)
 			i++
 		default:
@@ -512,8 +507,15 @@ func cmdDel(ctx *CommandContext) error {
 	for i := 1; i < len(ctx.Args); i++ {
 		keys[i-1] = bytesToStr(ctx.Args[i])
 	}
-	n := ctx.Store.Del(keys)
+	// Check existence before delete so we only replicate keys that were actually removed.
+	existing := make(map[string]bool, len(keys))
 	for _, k := range keys {
+		if ctx.Store.Exists([]string{k}) > 0 {
+			existing[k] = true
+		}
+	}
+	n := ctx.Store.Del(keys)
+	for k := range existing {
 		ReplicateDel(ctx.Peer, k)
 	}
 	return writeInt(ctx.Writer, int64(n))

@@ -21,6 +21,12 @@ import (
 // MaxBulkBytes is the maximum allowed bulk string payload size (512 MiB).
 const MaxBulkBytes = 512 * 1024 * 1024
 
+// MaxArrayElements is the maximum number of elements in a RESP array.
+const MaxArrayElements = 1 << 20 // ~1 million
+
+// maxLineBytes caps the total length of a simple/error/integer RESP line to prevent OOM.
+const maxLineBytes = 64 * 1024
+
 // bulkBodyPool recycles small bulk-string read buffers (initial cap 512; only slices <= 4096 bytes returned).
 var bulkBodyPool = sync.Pool{
 	New: func() any {
@@ -151,6 +157,9 @@ func (p *Parser) parseErrorValue() (Value, error) {
 	if err != nil {
 		return Value{}, fmt.Errorf("error string: %w", err)
 	}
+	if len(line) > maxLineBytes {
+		return Value{}, fmt.Errorf("error string: line too long")
+	}
 	return Value{Type: '-', Str: string(line)}, nil
 }
 
@@ -261,7 +270,7 @@ func (p *Parser) parseArray() (Value, error) {
 	if n64 == -1 {
 		return Value{Type: '*', IsNull: true, Array: nil}, nil
 	}
-	if n64 > 1<<30 {
+	if n64 > MaxArrayElements {
 		return Value{}, fmt.Errorf("array count too large")
 	}
 	n := int(n64)
@@ -321,6 +330,9 @@ func (p *Parser) readLineBytes() ([]byte, error) {
 				return nil, fmt.Errorf("buffer line: %w", err)
 			}
 			for {
+				if buf.Len() > maxLineBytes {
+					return nil, fmt.Errorf("line too long (exceeds %d bytes)", maxLineBytes)
+				}
 				b2, err := p.br.ReadByte()
 				if err != nil {
 					return nil, fmt.Errorf("read line: %w", err)

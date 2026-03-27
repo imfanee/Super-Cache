@@ -22,22 +22,25 @@ func (s *Store) HIncrBy(key, field string, delta int64) (int64, error) {
 		s.purgeEntryLocked(sh, key, e)
 		had = false
 	}
-	var h map[string][]byte
+	var oldH map[string][]byte
 	var old *entry
 	if had {
 		if e.dtype != TypeHash {
 			return 0, fmt.Errorf("hincrby: %w", ErrWrongType)
 		}
-		h = e.value.(map[string][]byte)
+		oldH = e.value.(map[string][]byte)
 		old = e
-	} else {
-		h = make(map[string][]byte)
+	}
+	// Clone the hash so estimateMem on old entry remains accurate.
+	h := make(map[string][]byte, len(oldH)+1)
+	for k, v := range oldH {
+		h[k] = v
 	}
 	cur := int64(0)
 	if v, ok := h[field]; ok {
-		s := strings.TrimSpace(string(v))
-		if s != "" {
-			n, err := strconv.ParseInt(s, 10, 64)
+		sv := strings.TrimSpace(string(v))
+		if sv != "" {
+			n, err := strconv.ParseInt(sv, 10, 64)
 			if err != nil {
 				return 0, fmt.Errorf("not an integer: %w", err)
 			}
@@ -59,8 +62,12 @@ func (s *Store) HIncrBy(key, field string, delta int64) (int64, error) {
 	if had {
 		oldB = estimateMem(key, old)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return 0, err
+	}
+	if evicted {
+		old = sh.m[key]
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return next, nil
@@ -76,22 +83,25 @@ func (s *Store) HIncrByFloat(key, field string, delta float64) (float64, error) 
 		s.purgeEntryLocked(sh, key, e)
 		had = false
 	}
-	var h map[string][]byte
+	var oldH map[string][]byte
 	var old *entry
 	if had {
 		if e.dtype != TypeHash {
 			return 0, fmt.Errorf("hincrbyfloat: %w", ErrWrongType)
 		}
-		h = e.value.(map[string][]byte)
+		oldH = e.value.(map[string][]byte)
 		old = e
-	} else {
-		h = make(map[string][]byte)
+	}
+	// Clone the hash so estimateMem on old entry remains accurate.
+	h := make(map[string][]byte, len(oldH)+1)
+	for k, v := range oldH {
+		h[k] = v
 	}
 	cur := 0.0
 	if v, ok := h[field]; ok {
-		s := strings.TrimSpace(string(v))
-		if s != "" {
-			f, err := strconv.ParseFloat(s, 64)
+		sv := strings.TrimSpace(string(v))
+		if sv != "" {
+			f, err := strconv.ParseFloat(sv, 64)
 			if err != nil {
 				return 0, fmt.Errorf("not a float: %w", err)
 			}
@@ -110,8 +120,12 @@ func (s *Store) HIncrByFloat(key, field string, delta float64) (float64, error) 
 	if had {
 		oldB = estimateMem(key, old)
 	}
-	if err := s.ensureMemoryWithRetry(sh, key, newB-oldB); err != nil {
+	evicted, err := s.ensureMemoryWithRetry(sh, key, newB-oldB)
+	if err != nil {
 		return 0, err
+	}
+	if evicted {
+		old = sh.m[key]
 	}
 	s.replaceEntry(sh, key, old, ne)
 	return next, nil

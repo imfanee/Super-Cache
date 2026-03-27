@@ -75,6 +75,8 @@ type Service struct {
 
 	inboundCh chan inboundReplJob
 	inboundWg sync.WaitGroup
+
+	configMu sync.Mutex // serializes AddPeer/RemovePeer config mutations
 }
 
 // inboundReplJob carries one replication frame for worker-pool apply (after handshake).
@@ -251,6 +253,8 @@ func (s *Service) Run(ctx context.Context) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			// Wait for inbound workers to finish (they exit via ctx.Done).
+			s.inboundWg.Wait()
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -633,16 +637,21 @@ func (s *Service) refreshMetrics() {
 
 // SetBootstrapInboundActive enables inbound replication buffering during snapshot pull (P2.3).
 func (s *Service) SetBootstrapInboundActive(active bool, maxCap int) {
-	s.bootstrapReplMu.Lock()
 	if !active {
+		// Deactivate the flag first so no new items are enqueued, then clear the buffer.
+		s.bootstrapActive.Store(false)
+		s.bootstrapReplMu.Lock()
 		s.bootstrapReplBuf = nil
+		s.bootstrapReplMu.Unlock()
+	} else {
+		s.bootstrapReplMu.Lock()
+		if maxCap < 1 {
+			maxCap = 1
+		}
+		s.bootstrapMaxCap = maxCap
+		s.bootstrapReplMu.Unlock()
+		s.bootstrapActive.Store(true)
 	}
-	if maxCap < 1 {
-		maxCap = 1
-	}
-	s.bootstrapMaxCap = maxCap
-	s.bootstrapReplMu.Unlock()
-	s.bootstrapActive.Store(active)
 	if s.metrics != nil {
 		s.metrics.SetBootstrapInboundQueueDepth(s.bootstrapQueueLen())
 	}
@@ -759,15 +768,18 @@ func (s *Service) AddPeer(addr string) error {
 	if err := config.ValidatePeerAddr(addr); err != nil {
 		return err
 	}
+	s.configMu.Lock()
 	cfg := s.c()
 	for _, p := range cfg.Peers {
 		if p == addr {
+			s.configMu.Unlock()
 			return fmt.Errorf("peer %s already configured", addr)
 		}
 	}
 	newCfg := *cfg
 	newCfg.Peers = append(append([]string(nil), cfg.Peers...), addr)
 	s.cfg.Store(&newCfg)
+	s.configMu.Unlock()
 	return s.ensureDial(addr)
 }
 
@@ -780,6 +792,7 @@ func (s *Service) RemovePeer(addr string) error {
 	if cancel != nil {
 		cancel()
 	}
+	s.configMu.Lock()
 	cfg := s.c()
 	newPeers := make([]string, 0, len(cfg.Peers))
 	for _, p := range cfg.Peers {
@@ -790,6 +803,7 @@ func (s *Service) RemovePeer(addr string) error {
 	newCfg := *cfg
 	newCfg.Peers = newPeers
 	s.cfg.Store(&newCfg)
+	s.configMu.Unlock()
 	return nil
 }
 
