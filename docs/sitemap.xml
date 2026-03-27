@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Update GITHUB_USERNAME with your GitHub username and configure GitHub Pages to serve the docs directory for this sitemap to be valid. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/index.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/ARCHITECTURE.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/CLI_REFERENCE.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/CONFIGURATION_REFERENCE.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/PEER_PROTOCOL.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/PERFORMANCE.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/REDIS_COMPATIBILITY.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/OPERATIONS_RUNBOOK.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/DEVELOPMENT_GUIDE.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/SECURITY.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/CHANGELOG.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/TROUBLESHOOTING.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://GITHUB_USERNAME.github.io/supercache/docs/KEYWORDS.html</loc><lastmod>2026-03-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+</urlset>

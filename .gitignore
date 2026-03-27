@@ -1,0 +1,7 @@
+build/
+supercache
+*.test
+coverage.out
+*.coverprofile
+*.out
+.DS_Store

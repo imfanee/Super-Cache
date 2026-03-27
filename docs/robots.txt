@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+# This file allows all search engine crawlers to index all project documentation.
+Sitemap: https://GITHUB_USERNAME.github.io/supercache/sitemap.xml # Update URL when GitHub Pages is configured.

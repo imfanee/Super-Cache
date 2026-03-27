@@ -1,0 +1,102 @@
+Copyright (c) 2024-2026 Faisal Hanif. All rights reserved.
+
+Super-Cache Software Licence
+Contact: Faisal Hanif | imfanee@gmail.com
+
+1. DEFINITIONS
+
+"Software" means the Super-Cache source code, binaries, documentation, configuration files, and any associated materials made available by the copyright holder.
+
+"Unmodified Software" means the Software in the exact form distributed by the copyright holder, with no alterations to source code, binaries, configuration defaults, or documentation content.
+
+"Modification" means any change, addition, deletion, adaptation, translation, or derivative work based on the Software, including but not limited to: adding features, removing features, changing behaviour, integrating the Software into a larger work that requires altering the Software's source code, and creating private forks.
+
+"Customisation Licence" means a written agreement issued by the copyright holder that grants a specific organisation the right to create Modifications.
+
+"Organisation" means a single legal entity, including its wholly-owned subsidiaries.
+
+"You" or "Your" means the individual or Organisation exercising rights under this Licence.
+
+2. FREE-USE GRANT
+
+Subject to the conditions of Section 4, the copyright holder grants You a worldwide, royalty-free, non-exclusive, non-sublicensable licence to use, copy, install, execute, and distribute the Unmodified Software for any purpose, including commercial purposes, at no charge.
+
+This grant applies only to the Unmodified Software.
+
+It does not extend to Modifications.
+
+3. RESTRICTIONS ON MODIFICATION
+
+You may not create Modifications to the Software unless You have obtained a Customisation Licence from the copyright holder or You have engaged the copyright holder to perform the Modifications as a paid development service.
+
+These restrictions apply regardless of whether the Modifications are distributed publicly, distributed privately within Your Organisation, used solely for internal purposes, or used as part of a larger commercial product or service.
+
+If You require Modifications, contact Faisal Hanif at imfanee@gmail.com to discuss either a Customisation Licence or paid development engagement.
+
+4. CONDITIONS FOR FREE-USE DISTRIBUTION
+
+If You distribute the Unmodified Software to third parties, whether as part of a larger product, service, container image, package repository, or any other form of distribution, You must retain this Licence file and the copyright notice in all copies.
+
+You must not remove, obscure, or alter the copyright notice, contact information, or any licence text.
+
+You must not represent the Software as Your own creation or misrepresent its origin.
+
+5. CUSTOMISATION LICENCE TERMS
+
+A Customisation Licence grants the purchasing Organisation the right to create Modifications to the Software for internal use within that Organisation.
+
+A Customisation Licence is scoped to a single Organisation and does not transfer to subsidiaries, parent companies, affiliates, or successor entities unless explicitly stated in a written agreement with the copyright holder.
+
+A Customisation Licence does not grant the right to distribute Modifications to third parties.
+
+A Customisation Licence does not grant ownership of intellectual property in the Modifications that derive substantially from the original Software.
+
+The copyright holder retains all intellectual property rights in the Software.
+
+To purchase a Customisation Licence, contact Faisal Hanif at imfanee@gmail.com.
+
+6. PAID DEVELOPMENT SERVICES
+
+As an alternative to purchasing a Customisation Licence, You may engage the copyright holder to implement Modifications on Your behalf as a paid development service.
+
+Under a paid development engagement, the copyright holder implements the requested Modifications and delivers them to You.
+
+The intellectual property terms of such an engagement are governed by a separate written agreement between You and the copyright holder.
+
+To discuss a paid development engagement, contact Faisal Hanif at imfanee@gmail.com.
+
+7. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+8. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES, LOSS OF USE, DATA, OR PROFITS, OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+THE COPYRIGHT HOLDER'S TOTAL LIABILITY FOR DIRECT DAMAGES SHALL NOT EXCEED THE AMOUNT YOU PAID FOR A CUSTOMISATION LICENCE, OR ONE HUNDRED UNITED STATES DOLLARS (USD 100) IF YOU HAVE NOT PAID ANY LICENCE FEE.
+
+9. TERMINATION
+
+Your rights under this Licence terminate automatically and without notice if You breach any condition of this Licence.
+
+Upon termination You must cease all use and distribution of the Software and destroy all copies in Your possession or control.
+
+Sections 1, 7, 8, 9, and 10 survive termination.
+
+10. GENERAL
+
+This Licence constitutes the entire agreement between You and the copyright holder with respect to the subject matter hereof.
+
+If any provision of this Licence is held to be unenforceable, such provision shall be reformed only to the extent necessary to make it enforceable, and the remaining provisions shall continue in full force and effect.
+
+This Licence is not an open-source licence as defined by the Open Source Initiative (opensource.org).
+
+The failure of the copyright holder to enforce any provision of this Licence shall not constitute a waiver of the copyright holder's right to enforce such provision in the future.
+
+This Licence shall be governed by and construed in accordance with applicable international copyright law.
+
+11. CONTACT
+
+For licensing enquiries, Customisation Licence purchases, or paid development services, contact: Faisal Hanif | imfanee@gmail.com

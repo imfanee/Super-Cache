@@ -1,0 +1,85 @@
+# Super-Cache example configuration (all fields shown with defaults).
+#
+# Architected and Developed By:- Faisal Hanif | imfanee@gmail.com
+
+# IP address or interface name for Redis-protocol client connections (default 0.0.0.0).
+client_bind = "0.0.0.0"
+
+# TCP port for Redis clients (default 6379).
+client_port = 6379
+
+# IP address or interface name for cluster peer connections (default 0.0.0.0).
+peer_bind = "0.0.0.0"
+
+# TCP port for peer mesh and replication (default 7379).
+peer_port = 7379
+
+# Optional list of peer addresses as host:port; empty for standalone.
+peers = []
+
+# Optional: after peer auth, exchange PEER_ANNOUNCE so nodes learn missing peer addresses (requires restart to change).
+# gossip_peers = false
+
+# Optional JSON file to merge saved peer addresses on startup (requires restart to change).
+# peer_state_file = ""
+
+# Optional host:port of one peer to pull a full snapshot from once at startup (empty = skip).
+bootstrap_peer = ""
+
+# Required cluster shared secret; must be at least 32 characters.
+shared_secret = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET_AT_LEAST_32_CHARS"
+
+# Max memory: "0" for unlimited, or e.g. "512mb", "2gb".
+max_memory = "0"
+
+# Eviction policy when memory is full: noeviction, allkeys-lru, volatile-lru, allkeys-random, volatile-random, volatile-ttl.
+max_memory_policy = "noeviction"
+
+# Optional Redis AUTH password; empty disables AUTH.
+auth_password = ""
+
+# Logging: debug, info, warn, error.
+log_level = "info"
+
+# Log destination: stdout, stderr, or a file path (parent directory must exist and be writable).
+log_output = "stdout"
+
+# Log line format: text (default), json, or logfmt (key=value via slog text handler).
+# log_format = "text"
+
+# Prometheus scrape endpoint (HTTP). metrics_port = 0 disables /metrics (default).
+# metrics_bind = "0.0.0.0"
+# metrics_port = 0
+
+# Optional TLS (P6): set both cert and key to enable. min_version 1.2 or 1.3 (restart required to change).
+# client_tls_cert_file = "/etc/supercache/client.crt"
+# client_tls_key_file = "/etc/supercache/client.key"
+# client_tls_min_version = "1.2"
+
+# Peer mesh TLS: listener cert/key + CA PEM for verifying peers (required for bootstrap/dial when enabled).
+# peer_tls_cert_file = "/etc/supercache/peer.crt"
+# peer_tls_key_file = "/etc/supercache/peer.key"
+# peer_tls_ca_file = "/etc/supercache/peer-ca.pem"
+# peer_tls_min_version = "1.2"
+
+# Capacity of the bootstrap write queue during snapshot sync (default 100000).
+bootstrap_queue_depth = 100000
+
+# Capacity of each peer outbound message queue (default 50000).
+peer_queue_depth = 50000
+
+# Peer heartbeat interval in seconds (default 5).
+heartbeat_interval = 5
+
+# Peer heartbeat timeout in seconds; must exceed heartbeat_interval (default 15).
+heartbeat_timeout = 15
+
+# Unix domain socket for management CLI (default /var/run/supercache.sock). Use "-" to disable.
+mgmt_socket = "/var/run/supercache.sock"
+
+# Optional loopback TCP management API (FR-028). 0 = Unix only. Requires restart to change.
+# mgmt_tcp_bind = "127.0.0.1"
+# mgmt_tcp_port = 0
+
+# Optional path for JSON spill of undelivered replication lines after graceful shutdown (empty = next to this config file; "-" = disable).
+# repl_shutdown_spill_path = ""

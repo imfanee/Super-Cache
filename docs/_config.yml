@@ -1,0 +1,31 @@
+title: Super-Cache
+description: Redis-compatible distributed in-memory cache with native P2P replication. Every node reads and writes. No Sentinel. No proxy. No code changes.
+url: https://GITHUB_USERNAME.github.io
+baseurl: /supercache
+theme: jekyll-theme-cayman
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+keywords:
+  - redis-alternative
+  - redis-compatible
+  - redis-cluster
+  - redis-replication
+  - memcached-alternative
+  - distributed-cache
+  - in-memory-cache
+  - key-value-store
+  - golang
+  - go
+  - peer-to-peer
+  - p2p-replication
+  - high-availability
+  - caching
+  - distributed-systems
+  - valkey-compatible
+  - drop-in-replacement
+  - zero-downtime
+  - sub-millisecond
+  - multi-master
+  - resp2
+  - resp-protocol
