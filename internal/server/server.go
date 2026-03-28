@@ -357,15 +357,6 @@ func (s *Server) replSpillPathResolved() string {
 	return filepath.Join(os.TempDir(), "supercache-repl-spill.json")
 }
 
-func replShutdownDuration(parent context.Context) time.Duration {
-	if dl, ok := parent.Deadline(); ok {
-		if rem := time.Until(dl); rem > 2*time.Second {
-			return rem
-		}
-	}
-	return 30 * time.Second
-}
-
 // Shutdown closes the client listener, waits for client handlers to finish, then flushes outbound
 // replication to peers (bounded time) and writes any remaining queued lines to a JSON spill file
 // when the path is enabled (see repl_shutdown_spill_path).

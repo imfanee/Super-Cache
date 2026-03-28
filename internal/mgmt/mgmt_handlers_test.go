@@ -24,7 +24,6 @@ type fakeExt struct {
 	mem             int64
 	keys            int
 	bootstrap       string
-	logLevel        string
 	reloadErr       error
 	reloadChanged   []string
 	peersList       []map[string]any
@@ -92,8 +91,8 @@ func TestHandleStatus(t *testing.T) {
 		t.Fatal(r)
 	}
 	m := r.Data.(map[string]any)
-	if int64(m["uptime_sec"].(int64)) != 42 && fmt.Sprint(m["uptime_sec"]) != "42" {
-		// JSON numbers decode as float64 when via map[string]any from other paths; accept both.
+	if fmt.Sprint(m["uptime_sec"]) != "42" {
+		t.Fatalf("uptime_sec: %v", m["uptime_sec"])
 	}
 	if fmt.Sprint(m["bootstrap_state"]) != "complete" {
 		t.Fatalf("%v", m)

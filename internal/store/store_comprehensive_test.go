@@ -85,7 +85,7 @@ func TestSetNXSetXXGetSet(t *testing.T) {
 		t.Fatal(prev, ok2, err)
 	}
 	_ = s.Set("gs2", []byte("old"), time.Time{})
-	prev, ok2, err = s.GetSet("gs2", []byte("neo"), time.Time{})
+	prev, _, err = s.GetSet("gs2", []byte("neo"), time.Time{})
 	if err != nil || string(prev) != "old" {
 		t.Fatal(prev, err)
 	}

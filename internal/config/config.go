@@ -412,7 +412,7 @@ func parseMemoryBytes(s string) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parse max_memory number: %w", err)
 	}
-	var mul uint64 = 1
+	var mul uint64
 	switch suffix {
 	case "", "b":
 		mul = 1
@@ -520,7 +520,7 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	if a.LogOutput != b.LogOutput {
 		hot = append(hot, "log_output")
 	}
-	if strings.ToLower(strings.TrimSpace(a.LogFormat)) != strings.ToLower(strings.TrimSpace(b.LogFormat)) {
+	if !strings.EqualFold(strings.TrimSpace(a.LogFormat), strings.TrimSpace(b.LogFormat)) {
 		hot = append(hot, "log_format")
 	}
 	if strings.TrimSpace(a.MetricsBind) != strings.TrimSpace(b.MetricsBind) {
