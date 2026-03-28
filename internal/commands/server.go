@@ -84,6 +84,18 @@ func cmdAuth(ctx *CommandContext) error {
 	if len(ctx.Args) != 2 {
 		return writeErr(ctx.Writer, argErr("AUTH"))
 	}
+	// Rate-limit AUTH attempts per connection.
+	if ctx.Session != nil && ctx.Config.AuthRateLimit > 0 {
+		now := time.Now()
+		if now.Sub(ctx.Session.AuthWindowStart) > time.Second {
+			ctx.Session.AuthAttempts = 0
+			ctx.Session.AuthWindowStart = now
+		}
+		ctx.Session.AuthAttempts++
+		if ctx.Session.AuthAttempts > ctx.Config.AuthRateLimit {
+			return writeErr(ctx.Writer, "ERR too many AUTH attempts, please slow down")
+		}
+	}
 	if string(ctx.Args[1]) != want {
 		return writeErr(ctx.Writer, errWrongPass)
 	}

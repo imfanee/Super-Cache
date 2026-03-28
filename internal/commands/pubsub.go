@@ -149,5 +149,7 @@ func cmdPublish(ctx *CommandContext) error {
 	ch := bytesToStr(ctx.Args[1])
 	msg := ctx.Args[2]
 	n := ctx.PubSub.Publish(ch, msg)
+	// Replicate PUBLISH to peers so subscribers on other nodes receive the message.
+	ReplicatePublish(ctx.Peer, ch, msg)
 	return writeInt(ctx.Writer, int64(n))
 }

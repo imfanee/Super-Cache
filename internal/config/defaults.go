@@ -41,3 +41,15 @@ const DefaultConfigPathAlt = "/etc/supercache/supercache.conf"
 
 // DefaultMgmtTCPBind is the loopback address for optional mgmt TCP (FR-028).
 const DefaultMgmtTCPBind = "127.0.0.1"
+
+// DefaultShutdownTimeout is the maximum seconds for graceful shutdown.
+const DefaultShutdownTimeout = 7
+
+// DefaultExpirySweepMs is the active-expiry sampling interval in milliseconds.
+const DefaultExpirySweepMs = 100
+
+// DefaultExpirySampleSize is the number of keys sampled per shard per cycle.
+const DefaultExpirySampleSize = 20
+
+// DefaultAuthRateLimit is the maximum AUTH attempts per second per connection (0 = unlimited).
+const DefaultAuthRateLimit = 10

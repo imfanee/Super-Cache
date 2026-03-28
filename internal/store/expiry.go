@@ -12,14 +12,24 @@ import (
 )
 
 const (
-	expirySamplePerShard = 20
-	expiryRepeatRatio    = 0.25
+	defaultExpirySamplePerShard = 20
+	defaultExpirySweepMs        = 100
+	expiryRepeatRatio           = 0.25
 )
 
-// runActiveExpiry wakes every 100ms and samples keys for expiration until ctx is done.
+// runActiveExpiry wakes periodically and samples keys for expiration until ctx is done.
 func runActiveExpiry(ctx context.Context, s *Store) {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	sweepMs := s.expirySweepMs
+	if sweepMs <= 0 {
+		sweepMs = defaultExpirySweepMs
+	}
+	ticker := time.NewTicker(time.Duration(sweepMs) * time.Millisecond)
 	defer ticker.Stop()
+	// Prune watch map every ~30 seconds.
+	pruneEvery := 30000 / sweepMs
+	if pruneEvery < 1 {
+		pruneEvery = 1
+	}
 	watchPruneCounter := 0
 	for {
 		select {
@@ -27,9 +37,8 @@ func runActiveExpiry(ctx context.Context, s *Store) {
 			return
 		case <-ticker.C:
 			sampleAllShards(s)
-			// Prune dead watch entries every ~30 seconds (300 ticks * 100ms).
 			watchPruneCounter++
-			if watchPruneCounter >= 300 {
+			if watchPruneCounter >= pruneEvery {
 				watchPruneCounter = 0
 				s.PruneWatch()
 			}
@@ -59,7 +68,11 @@ func sampleOnceShard(s *Store, si int) (expired int, checked int) {
 	if len(sh.m) == 0 {
 		return 0, 0
 	}
-	keys := randomSampleKeys(sh.m, expirySamplePerShard)
+	sampleSize := s.expirySampleSize
+	if sampleSize <= 0 {
+		sampleSize = defaultExpirySamplePerShard
+	}
+	keys := randomSampleKeys(sh.m, sampleSize)
 	for _, k := range keys {
 		e := sh.m[k]
 		if e == nil {

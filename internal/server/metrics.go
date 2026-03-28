@@ -135,6 +135,30 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 		},
 		func() float64 { return float64(s.stats.BootstrapKeysApplied()) },
 	))
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "supercache",
+			Name:      "command_latency_avg_us",
+			Help:      "Average command latency in microseconds since process start.",
+		},
+		func() float64 { return float64(s.stats.LatencyAvgUs()) },
+	))
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "supercache",
+			Name:      "command_latency_max_us",
+			Help:      "Maximum command latency in microseconds since process start.",
+		},
+		func() float64 { return float64(s.stats.LatencyMaxUs()) },
+	))
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "supercache",
+			Name:      "replication_outbound_queue_depth",
+			Help:      "Total depth of outbound replication queues across all peers.",
+		},
+		func() float64 { return float64(s.stats.ReplicationOutboundQueueDepth()) },
+	))
 
 	ver := strings.TrimSpace(s.stats.ServerVersion())
 	if ver == "" {

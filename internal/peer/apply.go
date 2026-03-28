@@ -155,6 +155,10 @@ func applyReplicatePayload(st *store.Store, p ReplicatePayload) error {
 		}
 		_, err := st.LInsert(p.Key, false, p.Members[0], p.Members[1])
 		return err
+	case "PUBLISH":
+		// PUBLISH replication is handled at a higher level (pub/sub manager),
+		// not in the store. Silently accept.
+		return nil
 	default:
 		return fmt.Errorf("unknown replicate op %q", op)
 	}

@@ -47,6 +47,10 @@ type Session struct {
 	LastCmdAt time.Time
 	// CmdCount is the number of commands executed on this session.
 	CmdCount int64
+	// AuthAttempts tracks AUTH attempts for rate limiting.
+	AuthAttempts int
+	// AuthWindowStart is the start of the current rate-limit window.
+	AuthWindowStart time.Time
 
 	outMu sync.Mutex
 }

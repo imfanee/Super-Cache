@@ -322,6 +322,14 @@ func ReplicateReplaceSet(rep peer.Replicator, key string, members [][]byte) {
 	_ = rep.Replicate(peer.ReplicatePayload{Op: "REPLACESET", Key: key, Members: cp})
 }
 
+// ReplicatePublish sends PUBLISH replication to peers so subscribers on other nodes receive the message.
+func ReplicatePublish(rep peer.Replicator, channel string, msg []byte) {
+	if rep == nil {
+		return
+	}
+	_ = rep.Replicate(peer.ReplicatePayload{Op: "PUBLISH", Key: channel, Value: append([]byte(nil), msg...)})
+}
+
 // ReplicateLTrim sends LTRIM replication.
 func ReplicateLTrim(rep peer.Replicator, key string, start, stop int64) {
 	if rep == nil {

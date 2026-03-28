@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"crypto/tls"
+	"log/slog"
 
 	"github.com/supercache/supercache/internal/client"
 	"github.com/supercache/supercache/internal/commands"
@@ -81,6 +82,7 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 			sess.Unlock()
 			continue
 		}
+		cmdStart := time.Now()
 		sess.Lock()
 		if err := s.dispatch(cmdCtx, v); err != nil {
 			sess.Unlock()
@@ -90,9 +92,18 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 			return
 		}
 		sess.Unlock()
+		elapsed := time.Since(cmdStart)
 		sess.LastCmdAt = time.Now()
 		sess.CmdCount++
 		s.stats.commandExecuted()
+		s.stats.recordLatency(elapsed)
+		if threshold := s.config().SlowlogThresholdUs; threshold > 0 && elapsed.Microseconds() > threshold {
+			slog.Warn("slow command",
+				"duration_us", elapsed.Microseconds(),
+				"session", sess.ID,
+				"cmd_count", sess.CmdCount,
+			)
+		}
 		if s.shuttingDown.Load() {
 			sess.Lock()
 			_ = wr.WriteError("LOADING server is shutting down")

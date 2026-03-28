@@ -1,5 +1,5 @@
 build/
-supercache
+/supercache
 *.test
 coverage.out
 *.coverprofile

@@ -77,6 +77,9 @@ type Service struct {
 	inboundWg sync.WaitGroup
 
 	configMu sync.Mutex // serializes AddPeer/RemovePeer config mutations
+
+	// onPublish delivers replicated PUBLISH messages to local subscribers (set by server).
+	onPublish func(channel string, message []byte)
 }
 
 // inboundReplJob carries one replication frame for worker-pool apply (after handshake).
@@ -370,6 +373,12 @@ func (s *Service) inboundWorkerLoop(ctx context.Context) {
 			if job.s.bootstrapActive.Load() {
 				if err := job.s.enqueueBootstrapRepl(job.wr); err != nil {
 					slog.Warn("bootstrap replication queue full", "remote", job.remote)
+				}
+				continue
+			}
+			if strings.EqualFold(job.wr.Op, "PUBLISH") {
+				if job.s.onPublish != nil {
+					job.s.onPublish(job.wr.Key, job.wr.Value)
 				}
 				continue
 			}
@@ -834,6 +843,11 @@ func (s *Service) PeersInfo() []map[string]any {
 		out = append(out, row)
 	}
 	return out
+}
+
+// SetOnPublish sets the callback for delivering replicated PUBLISH messages to local subscribers.
+func (s *Service) SetOnPublish(fn func(channel string, message []byte)) {
+	s.onPublish = fn
 }
 
 // Ensure Service implements Replicator.

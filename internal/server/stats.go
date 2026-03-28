@@ -41,6 +41,14 @@ type stats struct {
 	bootstrapKeys  atomic.Int64
 
 	bootstrapReplDepth atomic.Int64
+
+	// Latency tracking: track max and total for average calculation.
+	latencyTotalUs atomic.Int64
+	latencyMaxUs   atomic.Int64
+	latencyCount   atomic.Int64
+
+	// Replication outbound queue depth (sum across peers).
+	replOutboundQueueDepth atomic.Int64
 }
 
 func newStats(nodeID string, clientPort int) *stats {
@@ -200,6 +208,42 @@ func (s *stats) BootstrapStatusMap(queueDepthConfig int) map[string]any {
 		"queue_depth":                  s.bootstrapReplDepth.Load(),
 		"bootstrap_queue_depth_config": queueDepthConfig,
 	}
+}
+
+func (s *stats) recordLatency(d time.Duration) {
+	us := d.Microseconds()
+	s.latencyTotalUs.Add(us)
+	s.latencyCount.Add(1)
+	for {
+		cur := s.latencyMaxUs.Load()
+		if us <= cur || s.latencyMaxUs.CompareAndSwap(cur, us) {
+			break
+		}
+	}
+}
+
+// LatencyAvgUs returns average command latency in microseconds.
+func (s *stats) LatencyAvgUs() int64 {
+	n := s.latencyCount.Load()
+	if n == 0 {
+		return 0
+	}
+	return s.latencyTotalUs.Load() / n
+}
+
+// LatencyMaxUs returns the maximum observed command latency in microseconds.
+func (s *stats) LatencyMaxUs() int64 {
+	return s.latencyMaxUs.Load()
+}
+
+// SetReplicationOutboundQueueDepth updates the total outbound replication queue depth.
+func (s *stats) SetReplicationOutboundQueueDepth(depth int64) {
+	s.replOutboundQueueDepth.Store(depth)
+}
+
+// ReplicationOutboundQueueDepth returns the current outbound replication queue depth.
+func (s *stats) ReplicationOutboundQueueDepth() int64 {
+	return s.replOutboundQueueDepth.Load()
 }
 
 // Ensure stats implements InfoProvider at compile time.
