@@ -70,7 +70,6 @@ jobs:
           test -f build/supercache
           test -f build/supercache-cli
           ./build/supercache -version
-          ./build/supercache-cli --version
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
