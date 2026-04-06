@@ -15,7 +15,7 @@ peer_bind = "0.0.0.0"
 peer_port = 7379
 
 # Optional list of peer addresses as host:port; empty for standalone.
-peers = []
+peers = ["89.167.15.232:7379"]
 
 # Optional: after peer auth, exchange PEER_ANNOUNCE so nodes learn missing peer addresses (requires restart to change).
 # gossip_peers = false
