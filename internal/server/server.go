@@ -81,6 +81,10 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 	s.cfg.Store(cfg)
 	s.clientReady.Store(true)
+	// Wire up PUBLISH replication: deliver to local subscribers.
+	ps.SetOnPublish(func(channel string, message []byte) {
+		s.pubsub.Publish(channel, message)
+	})
 	return s, nil
 }
 
@@ -353,22 +357,17 @@ func (s *Server) replSpillPathResolved() string {
 	return filepath.Join(os.TempDir(), "supercache-repl-spill.json")
 }
 
-func replShutdownDuration(parent context.Context) time.Duration {
-	if dl, ok := parent.Deadline(); ok {
-		if rem := time.Until(dl); rem > 2*time.Second {
-			return rem
-		}
-	}
-	return 30 * time.Second
-}
-
 // Shutdown closes the client listener, waits for client handlers to finish, then flushes outbound
 // replication to peers (bounded time) and writes any remaining queued lines to a JSON spill file
 // when the path is enabled (see repl_shutdown_spill_path).
 func (s *Server) Shutdown(ctx context.Context) error {
 	slog.Info("Shutdown initiated")
 	s.shuttingDown.Store(true)
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	timeout := time.Duration(s.config().ShutdownTimeout) * time.Second
+	if timeout <= 0 {
+		timeout = 7 * time.Second
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	deadlineReached := func(stage string) bool {
 		select {

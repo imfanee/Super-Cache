@@ -830,3 +830,28 @@ auth_password = "new"
 		t.Fatalf("changed: %v", changed)
 	}
 }
+
+func TestNewConfigFieldDefaults(t *testing.T) {
+	var c Config
+	ApplyDefaults(&c)
+	if c.ShutdownTimeout != DefaultShutdownTimeout {
+		t.Fatalf("ShutdownTimeout: got %d, want %d", c.ShutdownTimeout, DefaultShutdownTimeout)
+	}
+	if c.ExpirySweepMs != DefaultExpirySweepMs {
+		t.Fatalf("ExpirySweepMs: got %d, want %d", c.ExpirySweepMs, DefaultExpirySweepMs)
+	}
+	if c.ExpirySampleSize != DefaultExpirySampleSize {
+		t.Fatalf("ExpirySampleSize: got %d, want %d", c.ExpirySampleSize, DefaultExpirySampleSize)
+	}
+	if c.AuthRateLimit != DefaultAuthRateLimit {
+		t.Fatalf("AuthRateLimit: got %d, want %d", c.AuthRateLimit, DefaultAuthRateLimit)
+	}
+}
+
+func TestSlowlogThresholdDefaultZero(t *testing.T) {
+	var c Config
+	ApplyDefaults(&c)
+	if c.SlowlogThresholdUs != 0 {
+		t.Fatalf("SlowlogThresholdUs should default to 0 (disabled), got %d", c.SlowlogThresholdUs)
+	}
+}

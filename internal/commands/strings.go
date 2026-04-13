@@ -203,13 +203,6 @@ func applySet(ctx *CommandContext, key string, val []byte, exp time.Time, nx, xx
 	if !ok {
 		return false, nil
 	}
-	var ttlms int64
-	if !exp.IsZero() {
-		ttlms = time.Until(exp).Milliseconds()
-		if ttlms < 0 {
-			ttlms = 0
-		}
-	}
 	ReplicateSet(ctx.Peer, key, val, exp)
 	return true, nil
 }

@@ -83,6 +83,16 @@ type Config struct {
 	PeerTLSCAFile string `toml:"peer_tls_ca_file" yaml:"peer_tls_ca_file"`
 	// PeerTLSMinVersion is "1.2" (default) or "1.3".
 	PeerTLSMinVersion string `toml:"peer_tls_min_version" yaml:"peer_tls_min_version"`
+	// ShutdownTimeout is the maximum seconds to wait during graceful shutdown; 0 uses default (7s).
+	ShutdownTimeout int `toml:"shutdown_timeout" yaml:"shutdown_timeout"`
+	// ExpirySweepMs is the active-expiry sampling interval in milliseconds; 0 uses default (100ms).
+	ExpirySweepMs int `toml:"expiry_sweep_ms" yaml:"expiry_sweep_ms"`
+	// ExpirySampleSize is the number of keys sampled per shard per sweep cycle; 0 uses default (20).
+	ExpirySampleSize int `toml:"expiry_sample_size" yaml:"expiry_sample_size"`
+	// SlowlogThresholdUs logs commands exceeding this duration in microseconds; 0 disables slow-log.
+	SlowlogThresholdUs int64 `toml:"slowlog_threshold_us" yaml:"slowlog_threshold_us"`
+	// AuthRateLimit is the maximum AUTH attempts per second per connection before throttling; 0 disables.
+	AuthRateLimit int `toml:"auth_rate_limit" yaml:"auth_rate_limit"`
 }
 
 var allowedMaxMemoryPolicies = map[string]struct{}{
@@ -157,6 +167,18 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.MgmtTCPPort > 0 && strings.TrimSpace(cfg.MgmtTCPBind) == "" {
 		cfg.MgmtTCPBind = DefaultMgmtTCPBind
+	}
+	if cfg.ShutdownTimeout == 0 {
+		cfg.ShutdownTimeout = DefaultShutdownTimeout
+	}
+	if cfg.ExpirySweepMs == 0 {
+		cfg.ExpirySweepMs = DefaultExpirySweepMs
+	}
+	if cfg.ExpirySampleSize == 0 {
+		cfg.ExpirySampleSize = DefaultExpirySampleSize
+	}
+	if cfg.AuthRateLimit == 0 {
+		cfg.AuthRateLimit = DefaultAuthRateLimit
 	}
 	if cfg.MaxMemory == "" {
 		cfg.MaxMemory = "0"
@@ -390,7 +412,7 @@ func parseMemoryBytes(s string) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parse max_memory number: %w", err)
 	}
-	var mul uint64 = 1
+	var mul uint64
 	switch suffix {
 	case "", "b":
 		mul = 1
@@ -498,7 +520,7 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	if a.LogOutput != b.LogOutput {
 		hot = append(hot, "log_output")
 	}
-	if strings.ToLower(strings.TrimSpace(a.LogFormat)) != strings.ToLower(strings.TrimSpace(b.LogFormat)) {
+	if !strings.EqualFold(strings.TrimSpace(a.LogFormat), strings.TrimSpace(b.LogFormat)) {
 		hot = append(hot, "log_format")
 	}
 	if strings.TrimSpace(a.MetricsBind) != strings.TrimSpace(b.MetricsBind) {

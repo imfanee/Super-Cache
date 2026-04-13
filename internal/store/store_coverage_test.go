@@ -89,7 +89,7 @@ func TestScanPaginationAndDefaults(t *testing.T) {
 		t.Fatalf("past end: next=%d keys=%v", next, keys)
 	}
 	_ = s.Set("pref_x", []byte("z"), time.Time{})
-	next, keys = s.Scan(0, "pref_*", 10, "")
+	_, keys = s.Scan(0, "pref_*", 10, "")
 	if len(keys) != 1 || keys[0] != "pref_x" {
 		t.Fatal(keys)
 	}

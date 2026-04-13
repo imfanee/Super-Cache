@@ -86,6 +86,10 @@ type Store struct {
 
 	watchMu sync.Mutex
 	watch   map[string]uint64
+
+	// Configurable tuning parameters.
+	expirySweepMs    int
+	expirySampleSize int
 }
 
 // SnapshotEntry is a portable representation of a key for bootstrap snapshots.
@@ -113,8 +117,10 @@ func NewStore(cfg *config.Config) (*Store, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Store{
-		cancel: cancel,
-		watch:  make(map[string]uint64),
+		cancel:           cancel,
+		watch:            make(map[string]uint64),
+		expirySweepMs:    cfg.ExpirySweepMs,
+		expirySampleSize: cfg.ExpirySampleSize,
 	}
 	s.cfg.Store(cfg)
 	s.refreshConfigCache(cfg)
