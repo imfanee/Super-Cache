@@ -59,6 +59,17 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 			return
 		default:
 		}
+		// Reap idle connections so dead clients (e.g. sockets kept alive only by a
+		// client's forked children) cannot pin a handler goroutine and fd forever.
+		// Subscribe mode and open MULTI blocks are legitimately quiet; during shutdown
+		// the drain logic owns the deadline, so leave it untouched.
+		if !s.shuttingDown.Load() {
+			if idle := s.config().ClientIdleTimeout; idle > 0 && !sess.InSubscribeMode() && !sess.InMulti {
+				_ = c.SetReadDeadline(time.Now().Add(time.Duration(idle) * time.Second))
+			} else {
+				_ = c.SetReadDeadline(time.Time{})
+			}
+		}
 		v, err := pr.Parse()
 		if err != nil {
 			if errors.Is(err, io.EOF) {

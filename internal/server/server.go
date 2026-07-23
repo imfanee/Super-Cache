@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/supercache/supercache/internal/client"
@@ -278,20 +279,40 @@ func (s *Server) Run(ctx context.Context) error {
 		s.closeListenerOnce()
 	}()
 
+	var acceptDelay time.Duration
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			s.wg.Wait()
 			if errors.Is(err, net.ErrClosed) {
+				s.waitHandlersWithTimeout(10 * time.Second)
 				return ctx.Err()
 			}
 			select {
 			case <-ctx.Done():
+				s.waitHandlersWithTimeout(10 * time.Second)
 				return ctx.Err()
 			default:
-				return fmt.Errorf("accept: %w", err)
 			}
+			// Transient conditions (fd exhaustion, aborted connections, kernel buffer
+			// pressure) can clear on their own; keep the listener serving. Parking here
+			// instead would blackhole every new client: the kernel keeps completing
+			// handshakes into the backlog while nothing accepts them.
+			if isTransientAcceptError(err) {
+				if acceptDelay == 0 {
+					acceptDelay = 10 * time.Millisecond
+				} else if acceptDelay < time.Second {
+					acceptDelay *= 2
+				}
+				slog.Warn("accept failed; retrying", "err", err, "delay", acceptDelay)
+				time.Sleep(acceptDelay)
+				continue
+			}
+			// Fatal: stop listening so clients fail fast with a refused connection,
+			// and return so the process exits and the supervisor restarts it.
+			s.closeListenerOnce()
+			return fmt.Errorf("accept: %w", err)
 		}
+		acceptDelay = 0
 		connKey := fmt.Sprintf("%p", conn)
 		s.activeConns.Store(connKey, conn)
 		s.wg.Add(1)
@@ -300,6 +321,32 @@ func (s *Server) Run(ctx context.Context) error {
 			defer s.activeConns.Delete(key)
 			s.serveConn(ctx, c)
 		}(connKey, conn)
+	}
+}
+
+// isTransientAcceptError reports whether an Accept error is a resource or
+// connection-level condition that can clear on its own rather than a dead listener.
+func isTransientAcceptError(err error) bool {
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return true
+	}
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) ||
+		errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EINTR)
+}
+
+// waitHandlersWithTimeout waits for client handlers to finish, but never parks
+// process exit forever behind connections that will not close.
+func (s *Server) waitHandlersWithTimeout(d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		slog.Warn("client handlers did not drain before exit; continuing", "timeout", d)
 	}
 }
 

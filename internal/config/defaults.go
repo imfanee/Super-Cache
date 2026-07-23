@@ -41,3 +41,6 @@ const DefaultConfigPathAlt = "/etc/supercache/supercache.conf"
 
 // DefaultMgmtTCPBind is the loopback address for optional mgmt TCP (FR-028).
 const DefaultMgmtTCPBind = "127.0.0.1"
+
+// DefaultClientIdleTimeout is the default idle client connection timeout in seconds.
+const DefaultClientIdleTimeout = 3600

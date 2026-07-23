@@ -40,6 +40,11 @@ type Config struct {
 	MaxMemoryPolicy string `toml:"max_memory_policy" yaml:"max_memory_policy"`
 	// AuthPassword is the optional Redis AUTH password; empty disables authentication.
 	AuthPassword string `toml:"auth_password" yaml:"auth_password"`
+	// ClientIdleTimeout closes client connections idle for this many seconds, so dead
+	// connections (e.g. sockets kept open by a client's forked children) cannot pin
+	// handler goroutines and file descriptors forever. 0 uses the default; negative
+	// disables the timeout. Connections in subscribe mode or inside MULTI are exempt.
+	ClientIdleTimeout int `toml:"client_idle_timeout" yaml:"client_idle_timeout"`
 	// LogLevel selects logging verbosity: debug, info, warn, or error.
 	LogLevel string `toml:"log_level" yaml:"log_level"`
 	// LogOutput is stdout, stderr, or a file path for log output.
@@ -160,6 +165,9 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.MaxMemory == "" {
 		cfg.MaxMemory = "0"
+	}
+	if cfg.ClientIdleTimeout == 0 {
+		cfg.ClientIdleTimeout = DefaultClientIdleTimeout
 	}
 	if cfg.MaxMemoryPolicy == "" {
 		cfg.MaxMemoryPolicy = "noeviction"
@@ -536,6 +544,9 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if a.AuthPassword != b.AuthPassword {
 		hot = append(hot, "auth_password")
+	}
+	if a.ClientIdleTimeout != b.ClientIdleTimeout {
+		hot = append(hot, "client_idle_timeout")
 	}
 	if a.HeartbeatInterval != b.HeartbeatInterval {
 		hot = append(hot, "heartbeat_interval")
