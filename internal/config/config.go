@@ -30,6 +30,16 @@ type Config struct {
 	PeerPort int `toml:"peer_port" yaml:"peer_port"`
 	// Peers is the list of peer addresses as host:port strings.
 	Peers []string `toml:"peers" yaml:"peers"`
+	// NodeID optionally pins this node's cluster identity. Empty (the default) derives a
+	// stable identity from the node's primary IP, so an instance keeps one identity across
+	// restarts with no per-node configuration baked into the machine image.
+	NodeID string `toml:"node_id" yaml:"node_id"`
+	// AdvertiseAddr is the host:port other nodes should dial to reach this node's peer
+	// listener. Empty (the default) derives it from the primary IP and PeerPort, which is
+	// what an autoscaled node needs since its address is unknown until boot. Set it
+	// explicitly when the node is reachable at an address it cannot observe locally,
+	// for example behind NAT or a load balancer.
+	AdvertiseAddr string `toml:"advertise_addr" yaml:"advertise_addr"`
 	// BootstrapPeer is an optional host:port to pull a full snapshot from once at startup (empty skips).
 	BootstrapPeer string `toml:"bootstrap_peer" yaml:"bootstrap_peer"`
 	// SharedSecret is the cluster authentication secret; required and at least 32 characters.
@@ -71,6 +81,12 @@ type Config struct {
 	MgmtTCPPort int `toml:"mgmt_tcp_port" yaml:"mgmt_tcp_port"`
 	// GossipPeers enables PEER_ANNOUNCE after mesh handshake so nodes learn peer addresses (P2.4).
 	GossipPeers bool `toml:"gossip_peers" yaml:"gossip_peers"`
+	// AutoDiscoverPeers makes a node add any peer that successfully authenticates to it, so a
+	// node created by an autoscaler is reachable without editing every existing node's config.
+	// Enabled by default; set to false to keep membership strictly to the configured list.
+	// Peers are still authenticated by shared secret either way, so this changes which
+	// authenticated nodes receive replication, not who may connect.
+	AutoDiscoverPeers *bool `toml:"auto_discover_peers" yaml:"auto_discover_peers"`
 	// PeerStateFile is an optional JSON path to persist merged peer list across restarts (P2.5).
 	PeerStateFile string `toml:"peer_state_file" yaml:"peer_state_file"`
 	// ReplShutdownSpillPath is the JSON file written when pending outbound replication cannot be flushed before exit.
@@ -215,6 +231,14 @@ func (c *Config) Validate() error {
 		if err := ValidatePeerAddr(c.BootstrapPeer); err != nil {
 			return fmt.Errorf("bootstrap_peer: %w", err)
 		}
+	}
+	if strings.TrimSpace(c.AdvertiseAddr) != "" {
+		if err := ValidatePeerAddr(c.AdvertiseAddr); err != nil {
+			return fmt.Errorf("advertise_addr: %w", err)
+		}
+	}
+	if err := validateNodeID(c.NodeID); err != nil {
+		return fmt.Errorf("node_id: %w", err)
 	}
 	if err := validateMaxMemoryString(c.MaxMemory); err != nil {
 		return fmt.Errorf("max_memory: %w", err)
@@ -367,6 +391,58 @@ func ValidatePeerAddr(s string) error {
 	return nil
 }
 
+// AutoDiscoverPeersEnabled reports whether this node adds peers that authenticate to it.
+// Unset means enabled, so an existing config file keeps working and gains the behaviour.
+func (c *Config) AutoDiscoverPeersEnabled() bool {
+	if c == nil || c.AutoDiscoverPeers == nil {
+		return true
+	}
+	return *c.AutoDiscoverPeers
+}
+
+// NormalizePeerAddr returns a canonical comparable form of a peer address so that the same
+// endpoint written different ways (IPv4 in 16-byte form, mixed-case hostname, bracketed IPv6)
+// compares equal. Used to recognise this node's own address in a learned peer list and to
+// avoid registering the same peer twice. Unparseable input is returned trimmed, unchanged.
+func NormalizePeerAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			host = v4.String()
+		} else {
+			host = ip.String()
+		}
+	} else {
+		host = strings.ToLower(host)
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// MaxNodeIDLen bounds an operator-supplied node_id. Node IDs travel in every handshake and
+// are used as map keys, so they stay short and printable.
+const MaxNodeIDLen = 128
+
+// validateNodeID accepts an empty value (identity is derived) or a short printable token.
+func validateNodeID(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if len(s) > MaxNodeIDLen {
+		return fmt.Errorf("must be at most %d characters", MaxNodeIDLen)
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("must not contain control characters")
+		}
+	}
+	return nil
+}
+
 func validateMaxMemoryString(s string) error {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if s == "0" || s == "" {
@@ -497,6 +573,14 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	if strings.TrimSpace(a.BootstrapPeer) != strings.TrimSpace(b.BootstrapPeer) {
 		blocked = append(blocked, "bootstrap_peer")
 	}
+	// Identity and advertisement are established during the handshake of every live peer
+	// link, so changing them at runtime would leave existing links keyed on stale values.
+	if strings.TrimSpace(a.NodeID) != strings.TrimSpace(b.NodeID) {
+		blocked = append(blocked, "node_id")
+	}
+	if strings.TrimSpace(a.AdvertiseAddr) != strings.TrimSpace(b.AdvertiseAddr) {
+		blocked = append(blocked, "advertise_addr")
+	}
 	if a.BootstrapQueueDepth != b.BootstrapQueueDepth {
 		blocked = append(blocked, "bootstrap_queue_depth")
 	}
@@ -559,6 +643,9 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if a.GossipPeers != b.GossipPeers {
 		blocked = append(blocked, "gossip_peers")
+	}
+	if a.AutoDiscoverPeersEnabled() != b.AutoDiscoverPeersEnabled() {
+		hot = append(hot, "auto_discover_peers")
 	}
 	if strings.TrimSpace(a.PeerStateFile) != strings.TrimSpace(b.PeerStateFile) {
 		blocked = append(blocked, "peer_state_file")

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -46,17 +47,18 @@ func (s *Service) consumeOptionalPeerAnnounce(c net.Conn, br *bufio.Reader) erro
 	return nil
 }
 
-func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Conn, br *bufio.Reader) {
+func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Conn, br *bufio.Reader, id peerIdentity) {
 	depth := s.c().PeerQueueDepth
 	if depth < 1 {
 		depth = 1
 	}
 	op := &outPeer{
-		addr:   addr,
-		nodeID: s.nodeID,
-		conn:   c,
-		w:      bufio.NewWriter(c),
-		replCh: make(chan wireRepl, depth),
+		addr:     addr,
+		nodeID:   s.nodeID,
+		remoteID: id.NodeID,
+		conn:     c,
+		w:        bufio.NewWriter(c),
+		replCh:   make(chan wireRepl, depth),
 	}
 	sessCtx, cancel := context.WithCancel(ctx)
 	op.cancelSession = cancel
@@ -70,7 +72,9 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 		cancel()
 		op.replStop.Store(true)
 		_ = c.Close()
-		s.unregisterOut(addr)
+		// Remove this exact link, not every link matching addr: an accepted link from the same
+		// peer carries the same advertised address and must survive this dial ending.
+		s.unregisterLink(op)
 	}()
 
 	interval := time.Duration(s.c().HeartbeatInterval) * time.Second
@@ -117,6 +121,13 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 			return
 		}
 		msg = NormalizePeerMessage(msg)
+		if msg.Type == MsgTypeReplicate {
+			// A peer that negotiated the duplex capability pushes its writes back down the
+			// connection this node opened, instead of relying on a separate dial in the other
+			// direction. Earlier builds fell through and dropped these frames silently.
+			s.handleDuplexRepl(ctx, addr, msg)
+			continue
+		}
 		if msg.Type != MsgTypeHeartbeat {
 			continue
 		}
@@ -136,6 +147,28 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 		default:
 			op.lastHeartbeatAck.Store(time.Now().UnixMilli())
 		}
+	}
+}
+
+// handleDuplexRepl applies a replication frame received on a connection this node dialed. It
+// routes through the same worker pool as accepted-connection replication so that bootstrap
+// buffering and ordering behave identically on both paths.
+func (s *Service) handleDuplexRepl(ctx context.Context, addr string, msg PeerMessage) {
+	var wr wireRepl
+	if err := json.Unmarshal(msg.Payload, &wr); err != nil {
+		return
+	}
+	if s.inboundCh == nil {
+		// No worker pool: the service was never started via Run (unit tests drive sessions
+		// directly). Apply inline rather than dropping the write.
+		if err := applyWireRepl(s.st, wr); err != nil {
+			slog.Error("peer apply", "err", err)
+		}
+		return
+	}
+	select {
+	case s.inboundCh <- inboundReplJob{s: s, remote: addr, wr: wr}:
+	case <-ctx.Done():
 	}
 }
 

@@ -69,9 +69,10 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	nodeID := randomNodeID()
+	nodeID, advertise := resolveIdentity(cfg)
 	stats := newStats(nodeID, cfg.ClientPort)
 	ps := peer.NewService(cfg, st, stats, stats, nodeID)
+	ps.SetAdvertiseAddr(advertise)
 	s := &Server{
 		store:       st,
 		registry:    commands.NewRegistry(),

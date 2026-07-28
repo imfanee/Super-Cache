@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,8 +50,20 @@ type Service struct {
 	bootObs BootstrapObserver
 	nodeID  string
 
+	// advertiseAddr is the host:port peers should dial to reach this node's listener. Sent in
+	// every handshake so an acceptor can learn a node it was never configured with.
+	advertiseAddr atomic.Pointer[string]
+
 	replSeq atomic.Uint64
 
+	// linkSeq assigns each registered link a monotonic number so that when two links reach the
+	// same node the choice of which one carries replication is stable rather than arbitrary.
+	linkSeq atomic.Uint64
+
+	// mu guards out, which holds every link this node may send replication on: outbound dials
+	// plus, once the capability is negotiated, accepted connections. Two links to the same node
+	// are de-duplicated at send time by remote node ID, never at registration time, so a link
+	// dropping does not lose the other.
 	mu  sync.RWMutex
 	out []*outPeer
 
@@ -86,9 +99,21 @@ type inboundReplJob struct {
 	wr     wireRepl
 }
 
+// outPeer is one authenticated link this node may replicate over. Despite the name it covers
+// both directions: a dial this node opened, and (when the duplex capability was negotiated) a
+// connection this node accepted.
 type outPeer struct {
-	addr             string
-	nodeID           string
+	addr string
+	// nodeID is the LOCAL node's identity, stamped into the envelope of frames sent on this
+	// link so the receiver knows who sent them. The remote's identity is remoteID.
+	nodeID string
+	// remoteID is the peer's identity from the handshake, or "" for a peer too old to send one.
+	// Links sharing a remoteID reach the same node and must not both carry the same write.
+	remoteID string
+	// inbound is true when this node accepted the connection rather than dialing it.
+	inbound bool
+	// linkSeq is the registration order, used as a stable tie-break between equivalent links.
+	linkSeq          uint64
 	conn             net.Conn
 	w                *bufio.Writer
 	replCh           chan wireRepl
@@ -119,6 +144,41 @@ func (s *Service) SetConfig(cfg *config.Config) {
 	}
 }
 
+// SetAdvertiseAddr sets the host:port this node tells peers to dial. Empty means this node
+// cannot be discovered automatically and must be added to peers by configuration.
+func (s *Service) SetAdvertiseAddr(addr string) {
+	addr = strings.TrimSpace(addr)
+	s.advertiseAddr.Store(&addr)
+}
+
+// AdvertiseAddr returns the address this node advertises to peers, or "" when it has none.
+func (s *Service) AdvertiseAddr() string {
+	if p := s.advertiseAddr.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// NodeID returns this node's cluster identity.
+func (s *Service) NodeID() string {
+	return s.nodeID
+}
+
+// isSelf reports whether an identity or address refers to this node. Without this check a node
+// that appears in its own learned peer list would dial itself and replicate every write back
+// into its own store, duplicating list operations.
+func (s *Service) isSelf(nodeID, addr string) bool {
+	if nodeID != "" && nodeID == s.nodeID {
+		return true
+	}
+	adv := s.AdvertiseAddr()
+	if adv != "" && addr != "" &&
+		config.NormalizePeerAddr(adv) == config.NormalizePeerAddr(addr) {
+		return true
+	}
+	return false
+}
+
 func (s *Service) c() *config.Config {
 	return s.cfg.Load()
 }
@@ -139,17 +199,64 @@ func (s *Service) buildWireRepl(p ReplicatePayload) wireRepl {
 	}
 }
 
-// Replicate enqueues one JSON line per connected outbound peer (non-blocking; drops on full queue, P3.1, P3.3).
-func (s *Service) Replicate(p ReplicatePayload) error {
-	wr := s.buildWireRepl(p)
+// preferLink reports whether a should carry replication instead of b when both reach the same
+// node. An outbound dial wins because it is the path every peer understands, including ones too
+// old to accept writes on a socket they opened. Between two links of the same direction the
+// older registration wins so the choice does not flap while both are alive.
+func preferLink(a, b *outPeer) bool {
+	if a.inbound != b.inbound {
+		return !a.inbound
+	}
+	return a.linkSeq < b.linkSeq
+}
+
+// replicationTargets returns exactly one live link per remote node.
+//
+// A node can be reachable over two links at once: this node's outbound dial to it, and the
+// connection it dialed to this node. Sending a write on both would apply it twice, which
+// silently corrupts every non-idempotent operation (LPUSH, RPUSH, LINSERT, LREM, LPOP, RPOP).
+// Selection happens per call rather than at registration so that losing one link immediately
+// promotes the other with no gap.
+func (s *Service) replicationTargets() []*outPeer {
 	s.mu.RLock()
-	peers := append([]*outPeer(nil), s.out...)
+	links := append([]*outPeer(nil), s.out...)
 	s.mu.RUnlock()
 
-	for _, op := range peers {
-		if op.replStop.Load() || op.replCh == nil {
+	best := make(map[string]*outPeer, len(links))
+	order := make([]string, 0, len(links))
+	for _, l := range links {
+		if l == nil || l.replStop.Load() || l.replCh == nil {
 			continue
 		}
+		key := l.remoteID
+		if key == "" {
+			// A peer that never identified itself cannot be de-duplicated by identity, so
+			// fall back to its address. Such a peer is old enough that it has no duplex link
+			// either, meaning there is only ever one link to it in the first place.
+			key = "addr:" + l.addr
+		}
+		cur, ok := best[key]
+		if !ok {
+			best[key] = l
+			order = append(order, key)
+			continue
+		}
+		if preferLink(l, cur) {
+			best[key] = l
+		}
+	}
+	out := make([]*outPeer, 0, len(order))
+	for _, k := range order {
+		out = append(out, best[k])
+	}
+	return out
+}
+
+// Replicate enqueues one JSON line per connected peer, one link per peer (non-blocking; drops
+// on full queue, P3.1, P3.3).
+func (s *Service) Replicate(p ReplicatePayload) error {
+	wr := s.buildWireRepl(p)
+	for _, op := range s.replicationTargets() {
 		select {
 		case op.replCh <- wr:
 		default:
@@ -268,9 +375,21 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 	defer c.Close()
 	remote := c.RemoteAddr().String()
 	br := bufio.NewReader(c)
-	if err := s.runInboundHandshake(c, br); err != nil {
+	id, err := s.runInboundHandshakeInfo(c, br)
+	if err != nil {
 		return
 	}
+
+	// Learn how to reach the node that just connected. Without this an autoscaled node can
+	// send us its writes but can never receive ours, because replication only ever flowed over
+	// links this node dialed, and this node has no configuration naming an address that did
+	// not exist when it started.
+	s.learnPeerFromInbound(id, c)
+
+	// The peer announce must be the first frame after the handshake, because a peer with
+	// gossip enabled reads exactly one frame here and rejects the link if it is anything else.
+	// The replication writer is therefore started only after this has been sent, or a write
+	// racing ahead of it would drop the connection into a reconnect loop.
 	if s.c().GossipPeers {
 		peers := append([]string(nil), s.c().Peers...)
 		paPayload, err := json.Marshal(wirePeerAnnounce{Op: wireOpPeerAnnounce, Peers: peers})
@@ -280,6 +399,16 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 		if err := WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeNodeList, NodeID: s.nodeID, Payload: paPayload}); err != nil {
 			return
 		}
+	}
+
+	// When the peer also applies replication on connections it opened, this accepted socket can
+	// carry writes to it immediately, without waiting for the dial-back above to succeed, and
+	// even when this node cannot reach it at all. Older peers drop such frames, so the link is
+	// only registered once the capability has been negotiated.
+	var link *outPeer
+	if id.Duplex && !s.isSelf(id.NodeID, id.Advertise) {
+		link = s.startInboundReplLink(ctx, c, id)
+		defer s.stopInboundReplLink(link)
 	}
 
 	s.inboundCount.Add(1)
@@ -323,15 +452,18 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 			case wireOpHeartbeatAck:
 				continue
 			case wireOpHeartbeat, "":
-				bw := bufio.NewWriter(c)
-				ackp, _ := json.Marshal(wireHeartbeat{Op: wireOpHeartbeatAck})
-				_ = WriteMessage(bw, PeerMessage{Version: 1, Type: MsgTypeHeartbeat, Payload: ackp})
-				_ = bw.Flush()
+				// Writes to this socket must go through the link's writer once one exists,
+				// otherwise the heartbeat ack and a concurrently written replication frame
+				// would interleave and corrupt the framing.
+				writeHeartbeatAck(c, link)
 			default:
 				continue
 			}
 			continue
 		case MsgTypeBootstrapReq:
+			// The snapshot stream writes to this socket directly, so the replication writer
+			// must be fully stopped first or the two would interleave mid-frame.
+			s.stopInboundReplLink(link)
 			if err := s.serveBootstrapSnapshot(c); err != nil {
 				slog.Error("peer bootstrap snapshot", "err", err)
 			}
@@ -342,6 +474,7 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 				continue
 			}
 			if strings.EqualFold(wr.Op, wireOpBootstrap) {
+				s.stopInboundReplLink(link)
 				if err := s.serveBootstrapSnapshot(c); err != nil {
 					slog.Error("peer bootstrap snapshot", "err", err)
 				}
@@ -354,6 +487,129 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 			}
 		default:
 			continue
+		}
+	}
+}
+
+// writeHeartbeatAck replies to a peer heartbeat on an accepted connection, serialising with the
+// replication writer when this link also carries writes.
+func writeHeartbeatAck(c net.Conn, link *outPeer) {
+	ackp, err := json.Marshal(wireHeartbeat{Op: wireOpHeartbeatAck})
+	if err != nil {
+		return
+	}
+	msg := PeerMessage{Version: 1, Type: MsgTypeHeartbeat, Payload: ackp}
+	if link == nil {
+		bw := bufio.NewWriter(c)
+		_ = WriteMessage(bw, msg)
+		_ = bw.Flush()
+		return
+	}
+	link.mu.Lock()
+	defer link.mu.Unlock()
+	if err := WriteMessage(link.w, msg); err == nil {
+		_ = link.w.Flush()
+	}
+}
+
+// learnPeerFromInbound records how to reach a node that connected to us, so replication can
+// flow back to it over a link this node owns.
+//
+// The address comes from what the peer advertised. A peer too old to advertise anything still
+// gets a usable address derived from its source IP and this node's peer port, which is correct
+// whenever the fleet shares a peer port — the normal case — and simply fails to connect
+// otherwise, exactly as it would have before.
+func (s *Service) learnPeerFromInbound(id peerIdentity, c net.Conn) {
+	if !s.c().AutoDiscoverPeersEnabled() {
+		return
+	}
+	addr := strings.TrimSpace(id.Advertise)
+	if addr == "" && c != nil && c.RemoteAddr() != nil {
+		addr = s.fallbackAdvertiseAddr(c.RemoteAddr().String())
+	}
+	if addr == "" {
+		return
+	}
+	if s.isSelf(id.NodeID, addr) {
+		return
+	}
+	if err := s.AddPeer(addr); err != nil {
+		// Already configured is the normal steady state, not a problem worth logging loudly.
+		slog.Debug("peer not added from inbound handshake", "addr", addr, "err", err)
+		return
+	}
+	slog.Info("learned peer from inbound connection", "addr", addr, "node_id", id.NodeID)
+}
+
+// fallbackAdvertiseAddr guesses a dialable address for a peer that did not advertise one, from
+// its source IP and this node's peer port. The guess is right whenever the fleet shares a peer
+// port, which is the normal deployment.
+//
+// A loopback or unspecified source is rejected: combined with our own peer port it would name
+// this node, so dialing it would connect the node to itself.
+func (s *Service) fallbackAdvertiseAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return ""
+	}
+	return net.JoinHostPort(host, strconv.Itoa(s.c().PeerPort))
+}
+
+// startInboundReplLink registers an accepted connection as a replication target and starts its
+// writer goroutine. Returns nil when the service is not running a session context.
+func (s *Service) startInboundReplLink(ctx context.Context, c net.Conn, id peerIdentity) *outPeer {
+	depth := s.c().PeerQueueDepth
+	if depth < 1 {
+		depth = 1
+	}
+	addr := strings.TrimSpace(id.Advertise)
+	if addr == "" {
+		addr = c.RemoteAddr().String()
+	}
+	link := &outPeer{
+		addr:     addr,
+		nodeID:   s.nodeID,
+		remoteID: id.NodeID,
+		inbound:  true,
+		conn:     c,
+		w:        bufio.NewWriter(c),
+		replCh:   make(chan wireRepl, depth),
+	}
+	sessCtx, cancel := context.WithCancel(ctx)
+	link.cancelSession = cancel
+	link.writerDone = make(chan struct{})
+	go func() {
+		outboundReplWriter(sessCtx, link)
+		close(link.writerDone)
+	}()
+	s.registerOut(link)
+	slog.Info("accepted peer link carrying replication", "peer", addr, "node_id", id.NodeID)
+	return link
+}
+
+// stopInboundReplLink tears down an accepted replication link and waits for its writer to stop
+// touching the socket. The wait matters because the caller may go on to write to the same
+// connection directly (a bootstrap snapshot stream), and two writers would interleave and
+// corrupt the framing. Safe to call more than once on the same link.
+func (s *Service) stopInboundReplLink(link *outPeer) {
+	if link == nil {
+		return
+	}
+	// Stop accepting frames before cancelling, so nothing is queued that will never be sent.
+	link.replStop.Store(true)
+	s.unregisterLink(link)
+	if link.cancelSession != nil {
+		link.cancelSession()
+	}
+	if link.writerDone != nil {
+		select {
+		case <-link.writerDone:
+		case <-time.After(2 * time.Second):
+			slog.Warn("accepted peer link writer did not stop in time", "peer", link.addr)
 		}
 	}
 }
@@ -380,88 +636,118 @@ func (s *Service) inboundWorkerLoop(ctx context.Context) {
 	}
 }
 
+// runInboundHandshake authenticates an accepted connection, discarding what it learns about
+// the peer. Retained for tests and callers that do not need the peer's identity.
 func (s *Service) runInboundHandshake(c net.Conn, br *bufio.Reader) error {
+	_, err := s.runInboundHandshakeInfo(c, br)
+	return err
+}
+
+// runInboundHandshakeInfo authenticates an accepted connection and reports what the peer said
+// about itself: its identity, the address it can be reached at, and its capabilities.
+func (s *Service) runInboundHandshakeInfo(c net.Conn, br *bufio.Reader) (peerIdentity, error) {
+	var id peerIdentity
 	remote := c.RemoteAddr().String()
 	msg, err := ReadMessage(br)
 	if err != nil {
-		return fmt.Errorf("peer handshake: %w", err)
+		return id, fmt.Errorf("peer handshake: %w", err)
 	}
 	msg = NormalizePeerMessage(msg)
 	if msg.Type != MsgTypeHello {
 		s.logPeerAuthFailure(remote, "expected HELLO")
 		p, _ := json.Marshal(wireHelloAck{Op: wireOpHelloAck, OK: false, Err: "expected HELLO"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeHelloAck, Payload: p})
-		return fmt.Errorf("expected HELLO")
+		return id, fmt.Errorf("expected HELLO")
 	}
 	var hello wireHello
 	if err := json.Unmarshal(msg.Payload, &hello); err != nil {
 		s.logPeerAuthFailure(remote, "invalid HELLO json")
 		p, _ := json.Marshal(wireHelloAck{Op: wireOpHelloAck, OK: false, Err: "invalid HELLO"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeHelloAck, Payload: p})
-		return fmt.Errorf("hello json: %w", err)
+		return id, fmt.Errorf("hello json: %w", err)
 	}
 	if !strings.EqualFold(hello.Op, wireOpHello) {
 		s.logPeerAuthFailure(remote, "expected HELLO")
 		p, _ := json.Marshal(wireHelloAck{Op: wireOpHelloAck, OK: false, Err: "expected HELLO"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeHelloAck, Payload: p})
-		return fmt.Errorf("expected HELLO")
+		return id, fmt.Errorf("expected HELLO")
 	}
-	if hello.Ver != PeerProtocolVersion {
+	// Accept a range rather than an exact match so that a future protocol bump can be rolled
+	// out one node at a time instead of requiring the whole fleet to restart together.
+	if hello.Ver < MinPeerProtocolVersion || hello.Ver > PeerProtocolVersion {
 		s.logPeerAuthFailure(remote, "unsupported protocol version")
 		p, _ := json.Marshal(wireHelloAck{Op: wireOpHelloAck, OK: false, Ver: PeerProtocolVersion, Err: "unsupported protocol version"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeHelloAck, Payload: p})
-		return fmt.Errorf("unsupported protocol version")
+		return id, fmt.Errorf("unsupported protocol version")
 	}
+	// The envelope also carries a node ID; fall back to it for peers that set only that field.
+	id.NodeID = strings.TrimSpace(hello.NodeID)
+	if id.NodeID == "" {
+		id.NodeID = strings.TrimSpace(msg.NodeID)
+	}
+	id.Advertise = strings.TrimSpace(hello.Advertise)
+	id.Duplex = hasCap(hello.Caps, CapDuplex)
+	id.Version = hello.Ver
+
 	nonce, err := randomNonce()
 	if err != nil {
-		return err
+		return id, err
 	}
 	nonceHex := hex.EncodeToString(nonce)
-	ackPayload, err := json.Marshal(wireHelloAck{Op: wireOpHelloAck, OK: true, Ver: PeerProtocolVersion, Nonce: nonceHex})
+	ackPayload, err := json.Marshal(wireHelloAck{
+		Op:        wireOpHelloAck,
+		OK:        true,
+		Ver:       PeerProtocolVersion,
+		Nonce:     nonceHex,
+		NodeID:    s.nodeID,
+		Advertise: s.AdvertiseAddr(),
+		Caps:      localCaps(),
+	})
 	if err != nil {
-		return fmt.Errorf("peer handshake: %w", err)
+		return id, fmt.Errorf("peer handshake: %w", err)
 	}
 	if err := WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeHelloAck, Payload: ackPayload}); err != nil {
-		return fmt.Errorf("peer handshake: %w", err)
+		return id, fmt.Errorf("peer handshake: %w", err)
 	}
 	msg2, err := ReadMessage(br)
 	if err != nil {
-		return fmt.Errorf("peer handshake: %w", err)
+		return id, fmt.Errorf("peer handshake: %w", err)
 	}
 	msg2 = NormalizePeerMessage(msg2)
 	if msg2.Type != MsgTypeAuth {
 		s.logPeerAuthFailure(remote, "invalid AUTH frame")
 		p, _ := json.Marshal(wireAck{Err: "invalid auth frame"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: p})
-		return fmt.Errorf("expected AUTH")
+		return id, fmt.Errorf("expected AUTH")
 	}
 	var proof wireAuthProof
 	if err := json.Unmarshal(msg2.Payload, &proof); err != nil {
 		s.logPeerAuthFailure(remote, "invalid AUTH frame")
 		p, _ := json.Marshal(wireAck{Err: "invalid auth frame"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: p})
-		return fmt.Errorf("auth proof json: %w", err)
+		return id, fmt.Errorf("auth proof json: %w", err)
 	}
-	if !strings.EqualFold(proof.Op, wireOpAuth) || proof.Ver != PeerProtocolVersion {
+	if !strings.EqualFold(proof.Op, wireOpAuth) ||
+		proof.Ver < MinPeerProtocolVersion || proof.Ver > PeerProtocolVersion {
 		s.logPeerAuthFailure(remote, "invalid AUTH op or version")
 		p, _ := json.Marshal(wireAck{Err: "bad auth"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: p})
-		return fmt.Errorf("bad auth proof")
+		return id, fmt.Errorf("bad auth proof")
 	}
 	if !verifyPeerHMAC(s.c().SharedSecret, proof.Hmac, nonce) {
 		s.logPeerAuthFailure(remote, "hmac verification failed")
 		p, _ := json.Marshal(wireAck{Err: "bad auth"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: p})
-		return fmt.Errorf("hmac mismatch")
+		return id, fmt.Errorf("hmac mismatch")
 	}
 	okPayload, err := json.Marshal(wireAck{OK: true})
 	if err != nil {
-		return fmt.Errorf("peer handshake: %w", err)
+		return id, fmt.Errorf("peer handshake: %w", err)
 	}
 	if err := WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: okPayload}); err != nil {
-		return fmt.Errorf("peer handshake: %w", err)
+		return id, fmt.Errorf("peer handshake: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 func (s *Service) logPeerAuthFailure(remote, reason string) {
@@ -492,68 +778,100 @@ func (s *Service) serveBootstrapSnapshot(c net.Conn) error {
 	return w.Flush()
 }
 
-// handshakeOut performs HELLO + HMAC AUTH and returns a Reader positioned for the next peer frame.
+// handshakeOut performs HELLO + HMAC AUTH and returns a Reader positioned for the next peer
+// frame, discarding what it learns about the peer.
 func (s *Service) handshakeOut(c net.Conn) (*bufio.Reader, error) {
+	br, _, err := s.handshakeOutInfo(c)
+	return br, err
+}
+
+// handshakeOutInfo performs HELLO + HMAC AUTH and additionally reports the peer's identity,
+// address, and capabilities. A peer running an older build answers without those fields, which
+// leaves the returned identity zeroed and keeps this node on the original dial-only behaviour.
+func (s *Service) handshakeOutInfo(c net.Conn) (*bufio.Reader, peerIdentity, error) {
+	return s.handshakeOutCaps(c, localCaps())
+}
+
+// handshakeOutCaps performs the outbound handshake advertising a specific capability set.
+//
+// Bootstrap dials pass no capabilities: that connection is a one-shot snapshot transfer whose
+// stream would be corrupted by replication frames sharing the socket. It still sends identity
+// and advertisement, so the snapshot source learns how to reach the joining node.
+func (s *Service) handshakeOutCaps(c net.Conn, caps []string) (*bufio.Reader, peerIdentity, error) {
+	var id peerIdentity
 	secret := s.c().SharedSecret
-	hPayload, err := json.Marshal(wireHello{Op: wireOpHello, Ver: PeerProtocolVersion})
+	hPayload, err := json.Marshal(wireHello{
+		Op:        wireOpHello,
+		Ver:       PeerProtocolVersion,
+		NodeID:    s.nodeID,
+		Advertise: s.AdvertiseAddr(),
+		Caps:      caps,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("peer handshake: %w", err)
+		return nil, id, fmt.Errorf("peer handshake: %w", err)
 	}
 	if err := WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeHello, NodeID: s.nodeID, Payload: hPayload}); err != nil {
-		return nil, fmt.Errorf("peer handshake: %w", err)
+		return nil, id, fmt.Errorf("peer handshake: %w", err)
 	}
 	br := bufio.NewReader(c)
 	msg, err := ReadMessage(br)
 	if err != nil {
-		return nil, fmt.Errorf("peer handshake: %w", err)
+		return nil, id, fmt.Errorf("peer handshake: %w", err)
 	}
 	msg = NormalizePeerMessage(msg)
 	if msg.Type != MsgTypeHelloAck {
-		return nil, fmt.Errorf("peer: expected HELLO_ACK")
+		return nil, id, fmt.Errorf("peer: expected HELLO_ACK")
 	}
 	var ack wireHelloAck
 	if err := json.Unmarshal(msg.Payload, &ack); err != nil {
-		return nil, fmt.Errorf("hello_ack: %w", err)
+		return nil, id, fmt.Errorf("hello_ack: %w", err)
 	}
 	if !strings.EqualFold(ack.Op, wireOpHelloAck) {
-		return nil, fmt.Errorf("peer: expected HELLO_ACK")
+		return nil, id, fmt.Errorf("peer: expected HELLO_ACK")
 	}
 	if !ack.OK || ack.Err != "" {
 		if ack.Err != "" {
-			return nil, fmt.Errorf("peer hello: %s", ack.Err)
+			return nil, id, fmt.Errorf("peer hello: %s", ack.Err)
 		}
-		return nil, fmt.Errorf("peer hello failed")
+		return nil, id, fmt.Errorf("peer hello failed")
 	}
 	nonce, err := hex.DecodeString(ack.Nonce)
 	if err != nil {
-		return nil, fmt.Errorf("peer nonce: %w", err)
+		return nil, id, fmt.Errorf("peer nonce: %w", err)
 	}
 	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
 	if err != nil {
-		return nil, fmt.Errorf("peer handshake: %w", err)
+		return nil, id, fmt.Errorf("peer handshake: %w", err)
 	}
 	if err := WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAuth, NodeID: s.nodeID, Payload: proofPayload}); err != nil {
-		return nil, fmt.Errorf("peer handshake: %w", err)
+		return nil, id, fmt.Errorf("peer handshake: %w", err)
 	}
 	msg3, err := ReadMessage(br)
 	if err != nil {
-		return nil, fmt.Errorf("peer handshake: %w", err)
+		return nil, id, fmt.Errorf("peer handshake: %w", err)
 	}
 	msg3 = NormalizePeerMessage(msg3)
 	if msg3.Type != MsgTypeAck {
-		return nil, fmt.Errorf("peer: expected ACK after AUTH")
+		return nil, id, fmt.Errorf("peer: expected ACK after AUTH")
 	}
 	var final wireAck
 	if err := json.Unmarshal(msg3.Payload, &final); err != nil {
-		return nil, fmt.Errorf("auth ack: %w", err)
+		return nil, id, fmt.Errorf("auth ack: %w", err)
 	}
 	if !final.OK || final.Err != "" {
 		if final.Err != "" {
-			return nil, fmt.Errorf("peer auth: %s", final.Err)
+			return nil, id, fmt.Errorf("peer auth: %s", final.Err)
 		}
-		return nil, fmt.Errorf("peer auth failed")
+		return nil, id, fmt.Errorf("peer auth failed")
 	}
-	return br, nil
+	id.NodeID = strings.TrimSpace(ack.NodeID)
+	if id.NodeID == "" {
+		id.NodeID = strings.TrimSpace(msg.NodeID)
+	}
+	id.Advertise = strings.TrimSpace(ack.Advertise)
+	id.Duplex = hasCap(ack.Caps, CapDuplex)
+	id.Version = ack.Ver
+	return br, id, nil
 }
 
 func (s *Service) dialLoop(ctx context.Context, addr string) {
@@ -576,7 +894,7 @@ func (s *Service) dialLoop(ctx context.Context, addr string) {
 			continue
 		}
 		attempt = 0
-		br, err := s.handshakeOut(c)
+		br, id, err := s.handshakeOutInfo(c)
 		if err != nil {
 			_ = c.Close()
 			if err := backoffSleep(ctx, attempt); err != nil {
@@ -584,6 +902,13 @@ func (s *Service) dialLoop(ctx context.Context, addr string) {
 			}
 			attempt++
 			continue
+		}
+		// A configured address can turn out to be this node itself, most often when a learned
+		// or gossiped peer list is fed back to its origin. Drop the dial rather than looping.
+		if id.NodeID != "" && id.NodeID == s.nodeID {
+			slog.Warn("peer dial reached this node; dropping self-connection", "addr", addr)
+			_ = c.Close()
+			return
 		}
 		if err := s.consumeOptionalPeerAnnounce(c, br); err != nil {
 			_ = c.Close()
@@ -593,7 +918,7 @@ func (s *Service) dialLoop(ctx context.Context, addr string) {
 			attempt++
 			continue
 		}
-		s.outboundPeerSession(ctx, addr, c, br)
+		s.outboundPeerSession(ctx, addr, c, br, id)
 		if ctx.Err() != nil {
 			return
 		}
@@ -602,17 +927,39 @@ func (s *Service) dialLoop(ctx context.Context, addr string) {
 }
 
 func (s *Service) registerOut(op *outPeer) {
+	op.linkSeq = s.linkSeq.Add(1)
 	s.mu.Lock()
 	s.out = append(s.out, op)
 	s.mu.Unlock()
 	s.refreshMetrics()
 }
 
+// unregisterOut removes dialed links to addr. Accepted links are skipped even when they carry
+// the same address: a peer's advertised address equals the address we dial it on, so removing
+// by address alone would tear down the accepted link as collateral when a dial ends.
 func (s *Service) unregisterOut(addr string) {
 	s.mu.Lock()
 	dst := s.out[:0]
 	for _, p := range s.out {
-		if p.addr != addr {
+		if p.inbound || p.addr != addr {
+			dst = append(dst, p)
+		}
+	}
+	s.out = dst
+	s.mu.Unlock()
+	s.refreshMetrics()
+}
+
+// unregisterLink removes one specific link. Accepted links share no stable address key with
+// each other, so they must be removed by identity rather than by address.
+func (s *Service) unregisterLink(target *outPeer) {
+	if target == nil {
+		return
+	}
+	s.mu.Lock()
+	dst := s.out[:0]
+	for _, p := range s.out {
+		if p != target {
 			dst = append(dst, p)
 		}
 	}
@@ -626,9 +973,13 @@ func (s *Service) refreshMetrics() {
 		return
 	}
 	s.mu.RLock()
-	addrs := make([]string, len(s.out))
-	for i, p := range s.out {
-		addrs[i] = p.addr
+	// Report only dialed links here. Accepted links are already counted by inboundCount, and
+	// listing them as outbound connections would double-count every duplex peer in INFO.
+	addrs := make([]string, 0, len(s.out))
+	for _, p := range s.out {
+		if !p.inbound {
+			addrs = append(addrs, p.addr)
+		}
 	}
 	s.mu.RUnlock()
 	ib := int(s.inboundCount.Load())
@@ -768,10 +1119,14 @@ func (s *Service) AddPeer(addr string) error {
 	if err := config.ValidatePeerAddr(addr); err != nil {
 		return err
 	}
+	if s.isSelf("", addr) {
+		return fmt.Errorf("peer %s is this node", addr)
+	}
 	s.configMu.Lock()
 	cfg := s.c()
+	want := config.NormalizePeerAddr(addr)
 	for _, p := range cfg.Peers {
-		if p == addr {
+		if p == addr || config.NormalizePeerAddr(p) == want {
 			s.configMu.Unlock()
 			return fmt.Errorf("peer %s already configured", addr)
 		}

@@ -85,10 +85,71 @@ Why HMAC:
 - Runtime `peers add/remove` mutates active peer set.
 - `NODE_LIST` can propagate new membership details.
 - Goal topology is a connected mesh.
+- A node that authenticates is added to the acceptor's peer set automatically
+  (`auto_discover_peers`, default on), using the address it advertised in `HELLO`.
+  This is what lets an autoscaled node join without editing every existing node's config.
+
+### Identity and Advertisement
+
+`HELLO` and `HELLO_ACK` carry three optional fields:
+
+| Field | Meaning |
+|---|---|
+| `node_id` | Stable cluster identity, by default `MD5(primary IP)`. Survives restarts. |
+| `adv` | `host:port` at which the sender's peer listener can be reached. |
+| `caps` | Optional protocol capabilities the sender supports. |
+
+All three are additive. A node running an older build omits them and ignores them on receipt,
+so they can be deployed one node at a time.
+
+When a peer sends no `adv`, the acceptor derives a dial-back address from the connection's
+source IP plus the local `peer_port`. A loopback or unspecified source is not used, since that
+address combined with the local peer port would name the acceptor itself.
+
+### Capabilities
+
+| Capability | Meaning |
+|---|---|
+| `duplex` | Sender applies `REPL` frames arriving on a connection it opened itself. |
+
+Capabilities are the intersection of what both ends advertise. A node that does not advertise
+`duplex` is only ever sent replication over a connection this node dialed, which is the
+original behaviour.
+
+Bootstrap dials advertise **no** capabilities: that connection carries a snapshot stream written
+directly to the socket, and replication frames sharing it would interleave mid-frame. Identity
+and advertisement are still sent, so a snapshot source still learns the joining node.
+
+### Protocol Versioning
+
+The `HELLO` version is accepted over the range `MinPeerProtocolVersion`..`PeerProtocolVersion`
+rather than by exact equality, so a future version bump can be rolled out one node at a time.
+
+Releases before this range check rejected any version not equal to their own. While any such
+node may still be in the fleet, `PeerProtocolVersion` must stay at `2` and new behaviour must be
+negotiated through `caps`. Raising it would make every not-yet-upgraded node refuse every
+upgraded one for the whole rollout.
 
 ## Write Replication
 
-Replication payload includes operation metadata and value data. Write handlers apply locally first, then enqueue `REPL` to outbound peer queues.
+Replication payload includes operation metadata and value data. Write handlers apply locally first, then enqueue `REPL` to peer queues.
+
+### Link Selection
+
+A node may hold two links to the same peer at once: its own outbound dial, and the connection
+that peer dialed to it. Exactly one link per peer carries replication, chosen per write:
+
+1. Prefer the outbound dial, which every peer understands regardless of version.
+2. Otherwise use the accepted connection, when `duplex` was negotiated.
+3. Between two links of the same direction, the older registration wins.
+
+Links are de-duplicated by `node_id`, not by address. Sending on both would apply each write
+twice: harmless for `SET`/`HSET`/`SADD`, but corrupting for every non-idempotent operation
+(`LPUSH`, `RPUSH`, `LINSERT`, `LREM`, `LPOP`, `RPOP`). A peer that sends no `node_id` is keyed
+by address instead; such a peer has no duplex link, so only one link to it can exist anyway.
+
+Selection happens per write rather than at registration, so losing one link promotes the other
+with no gap.
 
 Typical payload fields:
 

@@ -15,7 +15,25 @@ peer_bind = "0.0.0.0"
 peer_port = 7379
 
 # Optional list of peer addresses as host:port; empty for standalone.
+# With auto_discover_peers on (the default) this only needs one reachable node to join from:
+# peers that authenticate are added automatically, in both directions.
 peers = ["89.167.15.232:7379"]
+
+# Optional stable cluster identity. Empty (default) derives it from this node's primary IP, so an
+# instance keeps the same identity across restarts with nothing per-node baked into the image.
+# node_id = ""
+
+# Optional host:port other nodes should dial to reach this node's peer listener. Empty (default)
+# derives it from the primary IP and peer_port, which is what an autoscaled node needs since its
+# address is not known until boot. Set explicitly when this node is reachable only at an address
+# it cannot observe locally, such as behind NAT or a load balancer.
+# advertise_addr = ""
+
+# Add any peer that successfully authenticates to this node, so a node created by an autoscaler is
+# reachable without editing every existing node's configuration (default true). Peers are
+# authenticated by shared_secret either way, so this controls which authenticated nodes receive
+# replication, not who is allowed to connect.
+# auto_discover_peers = true
 
 # Optional: after peer auth, exchange PEER_ANNOUNCE so nodes learn missing peer addresses (requires restart to change).
 # gossip_peers = false

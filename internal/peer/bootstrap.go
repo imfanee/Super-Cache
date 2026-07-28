@@ -58,7 +58,10 @@ func (s *Service) pullSnapshotOnce(ctx context.Context, addr string) error {
 	}
 	defer conn.Close()
 
-	br, err := s.handshakeOut(conn)
+	// No capabilities are advertised on a bootstrap dial: this connection carries a snapshot
+	// stream, and a peer that pushed replication frames onto the same socket would interleave
+	// with it. Identity and advertisement are still sent so the source learns this node.
+	br, _, err := s.handshakeOutCaps(conn, nil)
 	if err != nil {
 		return fmt.Errorf("bootstrap auth: %w", err)
 	}
