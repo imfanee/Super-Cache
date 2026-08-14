@@ -199,3 +199,101 @@ func waitPeerReady(t *testing.T, srv *Server) {
 		t.Fatal("peer listener not ready")
 	}
 }
+
+// TestResyncDisabledDoesNothing covers the opt-out for operators who would rather stay diverged
+// and visible than refuse commands while refetching.
+func TestResyncDisabledDoesNothing(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	off := false
+	cfg := *srv.config()
+	cfg.ResyncOnGap = &off
+	srv.cfg.Store(&cfg)
+	srv.clientReady.Store(true)
+
+	srv.RequestResync("test")
+	if !srv.clientReady.Load() {
+		t.Fatal("a disabled resync must not take the node out of service")
+	}
+	if srv.stats.Resyncs() != 0 {
+		t.Fatal("a disabled resync must not be counted")
+	}
+}
+
+// TestResyncRateLimited is what bounds the cost of a fault that keeps producing loss: without a
+// floor between attempts such a node would refetch continuously and never serve.
+func TestResyncRateLimited(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	cfg := *srv.config()
+	cfg.ResyncMinInterval = 3600
+	srv.cfg.Store(&cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.setRunContext(ctx)
+
+	// A resync that ran a moment ago.
+	srv.lastResync.Store(time.Now().UnixMilli())
+	srv.clientReady.Store(true)
+	srv.RequestResync("test")
+
+	if !srv.clientReady.Load() {
+		t.Fatal("a rate-limited resync must leave the node serving")
+	}
+	if srv.stats.Resyncs() != 0 {
+		t.Fatal("a rate-limited resync must not be counted")
+	}
+	if srv.resyncing.Load() {
+		t.Fatal("the guard must be released when the request is refused")
+	}
+}
+
+// TestResyncSkippedWhileAlreadyRunning keeps overlapping refetches from stacking up.
+func TestResyncSkippedWhileAlreadyRunning(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.setRunContext(ctx)
+	srv.resyncing.Store(true) // one already in flight
+	srv.clientReady.Store(true)
+
+	srv.RequestResync("test")
+	if !srv.clientReady.Load() {
+		t.Fatal("a second resync must not disturb the node while one is running")
+	}
+	if srv.stats.Resyncs() != 0 {
+		t.Fatal("an overlapping resync must not be counted")
+	}
+}
+
+// TestResyncTakesNodeOutOfService is the intended behaviour when loss really is confirmed: the
+// node stops answering rather than serving data it knows is wrong.
+func TestResyncTakesNodeOutOfService(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.setRunContext(ctx)
+	srv.clientReady.Store(true)
+
+	srv.RequestResync("confirmed loss")
+	if srv.clientReady.Load() {
+		t.Fatal("a confirmed loss must stop the node answering until it has resynced")
+	}
+	if srv.stats.Resyncs() != 1 {
+		t.Fatalf("expected the resync to be counted once, got %d", srv.stats.Resyncs())
+	}
+	if srv.stats.BootstrapState() != "syncing" {
+		t.Fatalf("expected bootstrap_state syncing, got %q", srv.stats.BootstrapState())
+	}
+}
+
+// TestResyncWithoutRunContextIsSafe covers a request arriving before or after the server ran.
+func TestResyncWithoutRunContextIsSafe(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	srv.clientReady.Store(true)
+	srv.RequestResync("test")
+	if !srv.clientReady.Load() {
+		t.Fatal("a resync with nowhere to run must leave the node alone")
+	}
+	if srv.resyncing.Load() {
+		t.Fatal("the guard must be released")
+	}
+}

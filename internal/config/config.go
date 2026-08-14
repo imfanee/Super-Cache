@@ -117,6 +117,18 @@ type Config struct {
 	// untouched, at the cost of every rolling restart being invisible to peers until they
 	// notice on their own.
 	AnnounceLeave *bool `toml:"announce_leave" yaml:"announce_leave"`
+	// ResyncOnGap makes a node refetch the dataset when replication events from a peer are
+	// confirmed lost. Enabled by default.
+	//
+	// Replication carries changes rather than the state they produce, so an event that never
+	// arrived is missed permanently and nothing else will correct it. Refetching costs a period
+	// of refusing commands, which is why it only happens once loss is confirmed and no more
+	// often than ResyncMinInterval.
+	ResyncOnGap *bool `toml:"resync_on_gap" yaml:"resync_on_gap"`
+	// ResyncMinInterval is the shortest time, in seconds, between two resyncs. 0 uses the
+	// default. It bounds the cost of a fault that keeps producing loss: without it such a node
+	// would refetch continuously and never serve.
+	ResyncMinInterval int `toml:"resync_min_interval" yaml:"resync_min_interval"`
 	// PeerForgetAfter is how long, in seconds, a peer that was learned rather than configured
 	// may stay unreachable before it is removed. 0 uses the default; negative keeps every
 	// address forever, which is the behaviour before this setting existed.
@@ -216,6 +228,9 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.PeerForgetAfter == 0 {
 		cfg.PeerForgetAfter = DefaultPeerForgetAfter
+	}
+	if cfg.ResyncMinInterval == 0 {
+		cfg.ResyncMinInterval = DefaultResyncMinInterval
 	}
 	if cfg.MgmtSocket == "" {
 		cfg.MgmtSocket = DefaultMgmtSocket
@@ -439,6 +454,15 @@ func ValidatePeerAddr(s string) error {
 // Unset means enabled, so an existing config file keeps working and gains the behaviour.
 // AnnounceLeaveEnabled reports whether this node tells peers it is shutting down. Absent from
 // the file means enabled: a departure nobody is told about is the case this exists to fix.
+// ResyncOnGapEnabled reports whether confirmed replication loss triggers a refetch. Absent from
+// the file means enabled: silent divergence is the condition this exists to end.
+func (c *Config) ResyncOnGapEnabled() bool {
+	if c == nil || c.ResyncOnGap == nil {
+		return true
+	}
+	return *c.ResyncOnGap
+}
+
 func (c *Config) AnnounceLeaveEnabled() bool {
 	if c == nil || c.AnnounceLeave == nil {
 		return true
@@ -633,6 +657,12 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if a.AnnounceLeaveEnabled() != b.AnnounceLeaveEnabled() {
 		hot = append(hot, "announce_leave")
+	}
+	if a.ResyncOnGapEnabled() != b.ResyncOnGapEnabled() {
+		hot = append(hot, "resync_on_gap")
+	}
+	if a.ResyncMinInterval != b.ResyncMinInterval {
+		hot = append(hot, "resync_min_interval")
 	}
 	if strings.TrimSpace(a.MgmtTCPBind) != strings.TrimSpace(b.MgmtTCPBind) {
 		blocked = append(blocked, "mgmt_tcp_bind")

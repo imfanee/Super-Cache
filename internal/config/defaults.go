@@ -37,6 +37,10 @@ const DefaultDiscoveryInterval = 60
 // after the machine has genuinely gone.
 const DefaultPeerForgetAfter = 3600
 
+// DefaultResyncMinInterval is the shortest time between two resyncs, in seconds. Five minutes is
+// long enough that a node repeatedly losing events still spends most of its time serving.
+const DefaultResyncMinInterval = 300
+
 // DefaultHeartbeatTimeout is the default peer heartbeat timeout in seconds.
 const DefaultHeartbeatTimeout = 15
 

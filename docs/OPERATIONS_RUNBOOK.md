@@ -160,6 +160,29 @@ and one that reappears in a listing is re-added.
 Watch `supercache_discovered_peers`. Zero on a fleet that should have peers means discovery is
 answering but finding nothing, usually a label selector that matches no instances.
 
+### Recovering From Replication Loss
+
+Replication carries changes rather than the state they produce, so an event that never arrived is
+missed permanently: no later event repairs it, and the two nodes simply hold different data from
+then on.
+
+Each peer's events carry a sequence, and a skip means something did not arrive. A skip alone is
+not proof, since replacing one link to a peer with another can deliver an event behind the one
+that overtook it, so each missing sequence is held briefly and only what fails to turn up is
+counted as lost. Confirmed loss makes the node refetch the dataset from a peer, refusing commands
+with `LOADING` while it does.
+
+That refetch is deliberately rate limited by `resync_min_interval` (default five minutes). A
+fault producing loss continuously would otherwise leave a node permanently unavailable; instead
+it keeps serving between attempts, diverged but visible.
+
+Alert on `supercache_replication_resyncs_total`. Any increase means events were lost, not merely
+delayed, and the cause is upstream of the resync: usually `supercache_replication_dropped_total`
+on the sender, which means its outbound queue filled and `peer_queue_depth` is too small for the
+write rate.
+
+Set `resync_on_gap = false` to keep the detection and counters without the refetch.
+
 ## Health Monitoring
 
 ### Core Metrics

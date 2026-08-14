@@ -159,6 +159,14 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 		},
 		func() float64 { return float64(s.stats.ReplicationLateEvents()) },
 	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_resyncs_total",
+			Help:      "Times this node refetched the dataset after confirming replication events were lost. Any increase means data was missed, not merely delayed.",
+		},
+		func() float64 { return float64(s.stats.Resyncs()) },
+	))
 	reg.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: "supercache",

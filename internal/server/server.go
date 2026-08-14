@@ -68,6 +68,26 @@ type Server struct {
 	discoveryEnabled atomic.Bool
 	// discoveryListed is set once a provider has answered, successfully, at least once.
 	discoveryListed atomic.Bool
+
+	// resyncing guards against overlapping resyncs; lastResync is when the previous one began,
+	// in unix ms, which is what the minimum interval is measured from.
+	resyncing  atomic.Bool
+	lastResync atomic.Int64
+
+	runCtxMu sync.Mutex
+	runCtx   context.Context
+}
+
+func (s *Server) setRunContext(ctx context.Context) {
+	s.runCtxMu.Lock()
+	defer s.runCtxMu.Unlock()
+	s.runCtx = ctx
+}
+
+func (s *Server) runContext() context.Context {
+	s.runCtxMu.Lock()
+	defer s.runCtxMu.Unlock()
+	return s.runCtx
 }
 
 // bootstrapSources returns every address this node could pull a snapshot from: the configured
@@ -380,6 +400,8 @@ func (s *Server) Run(ctx context.Context) error {
 	// from.
 	// Addresses from the file are the operator's intent and are never removed automatically,
 	// however long they stay unreachable.
+	s.setRunContext(ctx)
+	s.peer.SetResyncRequester(s)
 	s.peer.NoteConfigPeers(c.Peers)
 	go s.runPeerReaper(ctx)
 

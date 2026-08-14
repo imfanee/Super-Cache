@@ -80,6 +80,17 @@ peers = ["89.167.15.232:7379"]
 # node is learned again when it comes back; set this to false where that churn is unwanted.
 # announce_leave = true
 
+# Refetch the whole dataset when replication events from a peer are confirmed lost (default true).
+#
+# Replication carries changes, not the state they produce, so an event that never arrived is
+# missed permanently and nothing else corrects it. A skipped sequence alone is not proof: swapping
+# one link to a peer for another can deliver an event late, so each missing sequence is held for a
+# few seconds and only what fails to turn up counts. Refetching means refusing commands for its
+# duration, so it happens no more often than resync_min_interval; between attempts the node keeps
+# serving, diverged but visible through supercache_replication_resyncs_total.
+# resync_on_gap = true
+# resync_min_interval = 300
+
 # Add any peer that successfully authenticates to this node, so a node created by an autoscaler is
 # reachable without editing every existing node's configuration (default true). Peers are
 # authenticated by shared_secret either way, so this controls which authenticated nodes receive

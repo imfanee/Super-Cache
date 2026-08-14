@@ -144,3 +144,50 @@ func (s *Server) runPeerReaper(ctx context.Context) {
 		}
 	}
 }
+
+// RequestResync refetches the dataset after replication loss has been confirmed.
+//
+// Losing events means this node holds different data from the peer that sent them, and nothing
+// else will ever correct it: replication carries changes, not the state they produce, so a
+// missed change is missed for good. A snapshot is the only way back to agreement.
+//
+// It is deliberately expensive and deliberately rate limited. The node stops answering while it
+// refetches, so a fault that produced loss continuously would otherwise keep it permanently
+// unavailable. Refusing to resync more than once per interval bounds that: between attempts the
+// node keeps serving, diverged but useful, with the counters showing why.
+func (s *Server) RequestResync(reason string) {
+	if !s.config().ResyncOnGapEnabled() {
+		return
+	}
+	// Already resyncing, or still doing its first sync: either way a second one adds nothing.
+	if !s.resyncing.CompareAndSwap(false, true) {
+		return
+	}
+	now := time.Now()
+	minGap := time.Duration(s.config().ResyncMinInterval) * time.Second
+	if last := s.lastResync.Load(); last != 0 && now.Sub(time.UnixMilli(last)) < minGap {
+		s.resyncing.Store(false)
+		slog.Warn("replication loss confirmed but a resync ran recently; staying diverged for now",
+			"reason", reason, "min_interval", minGap)
+		return
+	}
+	ctx := s.runContext()
+	if ctx == nil {
+		s.resyncing.Store(false)
+		return
+	}
+	s.lastResync.Store(now.UnixMilli())
+	slog.Error("resyncing from a peer after confirmed replication loss; refusing commands until done",
+		"reason", reason)
+	s.clientReady.Store(false)
+	s.stats.setBootstrapState("syncing")
+	s.stats.addResync(1)
+	go func() {
+		defer s.resyncing.Store(false)
+		// The snapshot replaces the dataset, so what this node knew about each peer's position
+		// no longer applies and would otherwise read as a fresh gap.
+		s.peer.ResetReplicationTracking()
+		s.bootstrapUntilSynced(ctx)
+		s.peer.ResetReplicationTracking()
+	}()
+}

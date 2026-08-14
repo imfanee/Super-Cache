@@ -106,6 +106,13 @@ type Service struct {
 	// skipped sequence can be noticed. Values are *atomic.Uint64.
 	originSeq sync.Map
 
+	// gaps holds sequences that have not arrived yet, so loss is only reported once they have
+	// had a chance to turn up late.
+	gaps *gapTracker
+
+	resyncMu sync.Mutex
+	resync   ResyncRequester
+
 	// inboundShards each have exactly one worker, and every event from a given origin is routed
 	// to the same shard. Applying one origin's events concurrently reordered them, so a peer's
 	// later write to a key could be overwritten by its own earlier one.
@@ -234,6 +241,7 @@ func NewService(cfg *config.Config, st *store.Store, metrics PeerMetrics, boot B
 		bootObs:     boot,
 		listenReady: make(chan struct{}),
 		nodeID:      nodeID,
+		gaps:        newGapTracker(),
 	}
 	s.cfg.Store(cfg)
 	return s
@@ -490,6 +498,8 @@ func (s *Service) Run(ctx context.Context) error {
 		}(ch)
 	}
 
+	go s.watchGaps(ctx)
+
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -695,15 +705,22 @@ func (s *Service) noteReplArrival(wr wireRepl) {
 		if s.metrics != nil {
 			s.metrics.AddReplicationGap(int64(missed))
 		}
-		slog.Error("replication gap: events from a peer never arrived and this node has diverged from it",
+		slog.Warn("replication gap; waiting to see whether the missing events arrive late",
 			"origin", origin, "missed", missed, "expected_seq", prev+1, "got_seq", wr.Seq)
+		if s.gaps != nil && s.gaps.note(origin, prev, wr.Seq) {
+			s.confirmLoss(origin, missed)
+		}
 	case wr.Seq == 1:
 		// The peer restarted and its counter began again.
 		last.Store(wr.Seq)
 		slog.Info("peer replication sequence restarted", "origin", origin)
 	default:
 		// At or below a sequence already seen. Switching between two links to the same peer can
-		// deliver a straggler from the old one after the new one has moved ahead.
+		// deliver a straggler from the old one after the new one has moved ahead, which fills a
+		// gap rather than proving one.
+		if s.gaps != nil {
+			s.gaps.arrived(origin, wr.Seq)
+		}
 		if s.metrics != nil {
 			s.metrics.AddReplicationLate(1)
 		}
