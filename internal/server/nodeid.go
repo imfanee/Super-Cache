@@ -47,14 +47,19 @@ func resolveIdentity(cfg *config.Config) (nodeID string, advertise string, seeds
 	nodeID = strings.TrimSpace(cfg.NodeID)
 	switch {
 	case nodeID != "" && stale != "":
-		// A pinned identity travels with a copied file exactly as the address does. Two nodes
-		// sharing an identity are folded into a single link by the replication de-duplication
-		// and each treats the other as itself, so writes flow one way and the copy silently
-		// never receives any. Deriving a fresh identity is the only safe reading.
-		nodeID = ""
-		slog.Error("ignoring node_id from a configuration that describes another machine; deriving a new identity",
-			"configured_node_id", strings.TrimSpace(cfg.NodeID), "configured_advertise_addr", stale)
-		fallthrough
+		// The address says this file describes another machine, which makes a pinned identity
+		// suspect too. It is kept regardless: a pinned node_id is explicit intent, and an
+		// address that is merely absent from this host's interfaces is not proof of copying —
+		// a floating address this node does not currently hold looks identical. Overriding it
+		// would silently change the identity of a correctly configured node.
+		//
+		// If the file really was copied, two nodes now share an identity and each treats the
+		// other as itself. That is visible rather than silent: both log a dropped
+		// self-connection, and this line names the cause.
+		slog.Error("node_id is pinned in a configuration whose advertise_addr belongs to another machine; "+
+			"if that file was copied, this node and the original share an identity and will not replicate "+
+			"to each other. Remove node_id so each machine derives its own.",
+			"node_id", nodeID, "configured_advertise_addr", stale)
 	case nodeID == "":
 		if ipErr == nil && ip != nil {
 			nodeID = netid.NodeIDFromIP(ip)

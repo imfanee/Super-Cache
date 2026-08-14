@@ -19,6 +19,15 @@ peer_port = 7379
 # peers that authenticate are added automatically, in both directions.
 peers = ["89.167.15.232:7379"]
 
+# Founding a new cluster: launch the first node with --found-cluster on the command line, not in
+# this file. If no peer answers it then serves as that cluster's first node instead of waiting.
+# It is a launch flag rather than a setting because a setting travels inside a machine image, and
+# every node cloned from that image would found its own cluster instead of joining one.
+#
+# The flag only applies when nothing is reachable. If a peer does answer, the node syncs from it
+# as usual, so passing it by mistake cannot make a node serve an empty dataset while its cluster
+# is up.
+
 # Optional stable cluster identity. Empty (default) derives it from this node's primary IP, so an
 # instance keeps the same identity across restarts with nothing per-node baked into the image.
 # Leave it empty in any image a node may be cloned from: a pinned identity travels with the file,

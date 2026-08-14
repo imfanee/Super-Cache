@@ -88,6 +88,31 @@ and will be replaced by a locally derived address at startup.
 Nothing needs to be added to `peers` for this to work, and the check costs one address
 comparison at startup.
 
+### Starting a New Cluster From an Existing Snapshot
+
+A node launched from another cluster's image inherits that cluster's `peers`, and possibly its
+discovery settings. Left alone it will try to sync from them, and since a node never serves from
+an unsynced store it would refuse commands indefinitely — the addresses belong to a cluster it
+cannot reach, or should not join.
+
+Launch the first node of the new cluster with the flag:
+
+```bash
+supercache -config /etc/supercache/supercache.toml --found-cluster
+```
+
+If nothing answers, the node serves as that cluster's first member with an empty dataset. If a
+peer does answer it syncs from it as normal, so the flag cannot be used to serve empty data while
+a cluster is reachable. Later nodes need no flag: they find the first one and sync from it.
+
+Pass it on the command line, never in the configuration file. A file travels inside the machine
+image, so every node cloned from it would found its own cluster and the fleet would fragment one
+instance at a time.
+
+Change `shared_secret` as well. Two clusters sharing a secret are one cluster: if the old nodes
+are reachable, a node from the new group will authenticate and join them, taking their data with
+it. Clearing `peers` and `advertise_addr` in the new image avoids the pointless dial attempts.
+
 ### Peer Discovery on Hetzner
 
 A node can find its peers from the Hetzner Cloud server inventory instead of a configured list.

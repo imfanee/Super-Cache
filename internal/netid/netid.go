@@ -244,6 +244,12 @@ func IsLocalIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
+	// The whole loopback range is this machine, but only 127.0.0.1 is normally assigned to an
+	// interface. Without this an address like 127.0.0.2, which binds and works, would be judged
+	// as belonging to some other host.
+	if ip.IsLoopback() {
+		return true
+	}
 	return containsIP(allLocalIPs(), ip)
 }
 

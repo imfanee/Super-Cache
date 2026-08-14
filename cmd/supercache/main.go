@@ -33,6 +33,7 @@ func main() {
 
 	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to TOML or YAML configuration file (default: first existing of "+config.DefaultConfigPath+" or "+config.DefaultConfigPathAlt+")")
+	foundCluster := flag.Bool("found-cluster", false, "serve as the first node of a new cluster if no peer can be reached, instead of waiting for one; pass only when launching a cluster's first node")
 	flag.Parse()
 	if *showVersion {
 		fmt.Fprintln(os.Stdout, "supercache version "+Version)
@@ -79,6 +80,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv.SetRunCancel(cancel)
+	srv.SetFoundCluster(*foundCluster)
+	if *foundCluster {
+		slog.Warn("launched with --found-cluster: if no peer answers, this node will serve as the " +
+			"first node of a new cluster rather than waiting to sync")
+	}
 	srv.SetOnReload(func(changed []string) {
 		needsLog := false
 		for _, ch := range changed {

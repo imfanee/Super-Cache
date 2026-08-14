@@ -76,6 +76,19 @@ type Server struct {
 
 	runCtxMu sync.Mutex
 	runCtx   context.Context
+
+	// foundCluster allows this node to serve as the origin of a new cluster when it cannot
+	// reach any peer, instead of waiting indefinitely for one.
+	foundCluster atomic.Bool
+}
+
+// SetFoundCluster permits this node to found a new cluster when no peer is reachable.
+//
+// It is a launch-time decision rather than a configuration value on purpose: a configuration
+// file travels with a machine image, so a node cloned from one carrying this would found its own
+// cluster instead of joining, and a fleet would fragment one instance at a time.
+func (s *Server) SetFoundCluster(v bool) {
+	s.foundCluster.Store(v)
 }
 
 func (s *Server) setRunContext(ctx context.Context) {
@@ -174,6 +187,18 @@ func (s *Server) bootstrapUntilSynced(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Nothing answered, and this node was launched as the origin of a new cluster. The
+		// addresses it is configured with belong to whatever it was cloned from, and waiting for
+		// them would mean never serving. A failure after a link was established is different:
+		// the cluster is there and reachable, so this keeps retrying.
+		if errors.Is(err, errNoPeerLink) && s.foundCluster.Load() {
+			s.stats.setBootstrapState("standalone")
+			s.clientReady.Store(true)
+			slog.Warn("no peer was reachable and this node was launched to found a new cluster; "+
+				"serving as its first node with an empty dataset",
+				"unreachable_sources", len(candidates))
+			return
+		}
 		slog.Error("bootstrap failed; this node will not serve clients until it syncs",
 			"attempt", attempt, "sources", len(candidates), "retry_in", backoff, "err", err)
 		select {
@@ -212,6 +237,11 @@ func (s *Server) bootstrapOnce(ctx context.Context, candidates []string, depth i
 // buffer. Nothing detects the loss, because no receiver reads the sequence numbers that would
 // reveal it. Buffering is already active when this is called, so the moment a link appears its
 // frames are queued rather than applied.
+// errNoPeerLink means no peer could be reached at all, as opposed to a sync that started and
+// then failed. Only the former justifies founding a new cluster: if a link was established the
+// cluster exists and this node must keep trying rather than declare itself its origin.
+var errNoPeerLink = errors.New("no peer link established")
+
 func (s *Server) awaitPeerLink(ctx context.Context) error {
 	const (
 		wait = 15 * time.Second
@@ -227,7 +257,7 @@ func (s *Server) awaitPeerLink(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("no peer link established within %s; cannot sync without one", wait)
+			return fmt.Errorf("%w within %s; cannot sync without one", errNoPeerLink, wait)
 		case <-time.After(tick):
 		}
 	}

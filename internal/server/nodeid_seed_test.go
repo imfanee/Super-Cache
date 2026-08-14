@@ -81,17 +81,24 @@ func TestResolveIdentityClonedConfig(t *testing.T) {
 	}
 }
 
-// TestResolveIdentityClonedConfigDiscardsPinnedNodeID guards the silent half of the copied
-// configuration problem: two nodes sharing an identity each treat the other as themselves and
-// replication between them stops without any error.
-func TestResolveIdentityClonedConfigDiscardsPinnedNodeID(t *testing.T) {
+// TestResolveIdentityClonedConfigKeepsPinnedNodeID states the trade deliberately. An address
+// missing from this host's interfaces is not proof the file was copied: a floating address the
+// node does not currently hold looks exactly the same. Overriding a pinned identity on that
+// evidence would silently rename a correctly configured node, so the identity stands and the
+// situation is reported instead.
+func TestResolveIdentityClonedConfigKeepsPinnedNodeID(t *testing.T) {
 	cfg := &config.Config{PeerPort: 7379, AdvertiseAddr: remoteAddr, NodeID: pinnedID}
-	nodeID, _, _ := resolveIdentity(cfg)
-	if nodeID == pinnedID {
-		t.Fatal("expected the inherited node_id to be discarded")
+	nodeID, advertise, seeds := resolveIdentity(cfg)
+	if nodeID != pinnedID {
+		t.Fatalf("a pinned node_id must be kept, got %q", nodeID)
 	}
-	if nodeID == "" {
-		t.Fatal("expected a replacement node identity")
+	// The advertisement is still corrected, since announcing an address this machine does not
+	// hold would point every peer at the wrong node.
+	if advertise == remoteAddr {
+		t.Fatal("must not advertise an address belonging to another machine")
+	}
+	if len(seeds) != 1 || seeds[0] != remoteAddr {
+		t.Fatalf("expected the copied address as a seed, got %v", seeds)
 	}
 }
 

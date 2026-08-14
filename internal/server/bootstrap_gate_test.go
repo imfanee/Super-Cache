@@ -153,3 +153,155 @@ func TestStandaloneNodeServesImmediately(t *testing.T) {
 		t.Fatalf("a standalone node should serve immediately, got %q", line)
 	}
 }
+
+// TestFoundClusterServesWhenNoPeerReachable covers launching the first node of a new cluster
+// from a snapshot: its configuration names the old cluster's peers, none of which it can reach,
+// and without this it would refuse commands indefinitely.
+func TestFoundClusterServesWhenNoPeerReachable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	port, peerPort := freePort(t), freePort(t)
+	c := &config.Config{
+		SharedSecret: strings.Repeat("a", 32),
+		ClientPort:   port,
+		PeerPort:     peerPort,
+		// Reserved for documentation, so nothing can answer.
+		Peers: []string{"203.0.113.7:7379", "203.0.113.8:7379"},
+	}
+	config.ApplyDefaults(c)
+	c.MgmtSocket = "-"
+
+	srv, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetFoundCluster(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Run(ctx) }()
+
+	conn := dialWithRetry(t, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)))
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+
+	// The founding decision follows one failed attempt, which waits for a peer link.
+	deadline := time.Now().Add(40 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read reply: %v", err)
+		}
+		if strings.HasPrefix(line, "+PONG") {
+			if srv.stats.BootstrapState() != "standalone" {
+				t.Fatalf("expected standalone, got %q", srv.stats.BootstrapState())
+			}
+			return
+		}
+		if !strings.HasPrefix(line, "-LOADING") {
+			t.Fatalf("unexpected reply %q", line)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatal("a node launched to found a cluster never began serving")
+}
+
+// TestFoundClusterStillWaitsWhenAPeerAnswers is the safety half. The flag must not become a way
+// to serve an empty store while the cluster is reachable, which would look like data loss to
+// every client of this node.
+func TestFoundClusterStillWaitsWhenAPeerAnswers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	// A listener that accepts but never completes a handshake: reachable, so a link forms at the
+	// TCP level, yet no snapshot can be pulled from it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c
+		}
+	}()
+
+	port, peerPort := freePort(t), freePort(t)
+	c := &config.Config{
+		SharedSecret: strings.Repeat("a", 32),
+		ClientPort:   port,
+		PeerPort:     peerPort,
+		Peers:        []string{ln.Addr().String()},
+	}
+	config.ApplyDefaults(c)
+	c.MgmtSocket = "-"
+
+	srv, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetFoundCluster(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Run(ctx) }()
+
+	conn := dialWithRetry(t, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)))
+	defer conn.Close()
+	if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !strings.HasPrefix(line, "-LOADING") {
+		t.Fatalf("must keep waiting while a peer is reachable, got %q", line)
+	}
+}
+
+// TestWithoutFoundClusterNeverServesUnsynced confirms the default is unchanged.
+func TestWithoutFoundClusterNeverServesUnsynced(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	port, peerPort := freePort(t), freePort(t)
+	c := &config.Config{
+		SharedSecret: strings.Repeat("a", 32),
+		ClientPort:   port,
+		PeerPort:     peerPort,
+		Peers:        []string{"203.0.113.9:7379"},
+	}
+	config.ApplyDefaults(c)
+	c.MgmtSocket = "-"
+
+	srv, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Run(ctx) }()
+
+	conn := dialWithRetry(t, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)))
+	defer conn.Close()
+	if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !strings.HasPrefix(line, "-LOADING") {
+		t.Fatalf("without the flag an unsynced node must refuse commands, got %q", line)
+	}
+}
