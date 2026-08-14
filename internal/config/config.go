@@ -47,6 +47,17 @@ type Config struct {
 	BootstrapPeer string `toml:"bootstrap_peer" yaml:"bootstrap_peer"`
 	// SharedSecret is the cluster authentication secret; required and at least 32 characters.
 	SharedSecret string `toml:"shared_secret" yaml:"shared_secret"`
+	// ClusterID names the cluster this node belongs to, and must match on every node in it.
+	//
+	// It exists because the shared secret alone cannot separate two clusters: a node built from
+	// another cluster's image carries that secret, so it authenticates and joins, taking the
+	// other cluster's data with it. Setting a different ClusterID makes that impossible.
+	//
+	// The value is never sent on the wire. It is folded into the authentication proof, so a
+	// mismatch fails exactly as a wrong secret does and no node can be asked which cluster it
+	// belongs to. Protection only applies between nodes that both set one, so it takes effect
+	// once the whole fleet has it.
+	ClusterID string `toml:"cluster_id" yaml:"cluster_id"`
 	// MaxMemory is the maximum memory limit, e.g. 2gb, 512mb, or 0 for unlimited.
 	MaxMemory string `toml:"max_memory" yaml:"max_memory"`
 	// MaxMemoryPolicy selects eviction behavior when memory is full.
@@ -257,6 +268,9 @@ func ApplyDefaults(cfg *Config) {
 
 // Validate checks all configuration constraints and returns an error describing violations.
 func (c *Config) Validate() error {
+	if err := validateClusterID(c.ClusterID); err != nil {
+		return err
+	}
 	if len(strings.TrimSpace(c.SharedSecret)) < 32 {
 		return fmt.Errorf("shared_secret must be non-empty and at least 32 characters")
 	}
@@ -503,6 +517,26 @@ func NormalizePeerAddr(addr string) string {
 // are used as map keys, so they stay short and printable.
 const MaxNodeIDLen = 128
 
+// MaxClusterIDLen bounds cluster_id. It is folded into every authentication proof, so there is
+// no reason for it to be long.
+const MaxClusterIDLen = 128
+
+func validateClusterID(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if len(s) > MaxClusterIDLen {
+		return fmt.Errorf("cluster_id must be at most %d characters", MaxClusterIDLen)
+	}
+	for _, r := range s {
+		if r < 0x21 || r > 0x7e {
+			return fmt.Errorf("cluster_id must contain only printable non-space ASCII")
+		}
+	}
+	return nil
+}
+
 // validateNodeID accepts an empty value (identity is derived) or a short printable token.
 func validateNodeID(s string) error {
 	s = strings.TrimSpace(s)
@@ -630,6 +664,9 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if a.SharedSecret != b.SharedSecret {
 		blocked = append(blocked, "shared_secret")
+	}
+	if strings.TrimSpace(a.ClusterID) != strings.TrimSpace(b.ClusterID) {
+		blocked = append(blocked, "cluster_id")
 	}
 	if a.MgmtSocket != b.MgmtSocket {
 		blocked = append(blocked, "mgmt_socket")

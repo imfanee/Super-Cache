@@ -969,6 +969,7 @@ func (s *Service) runInboundHandshakeInfo(c net.Conn, br *bufio.Reader) (peerIde
 	}
 	id.Advertise = strings.TrimSpace(hello.Advertise)
 	id.Duplex = hasCap(hello.Caps, CapDuplex)
+	id.Cluster = hasCap(hello.Caps, CapCluster)
 	id.Version = hello.Ver
 
 	nonce, err := randomNonce()
@@ -983,7 +984,7 @@ func (s *Service) runInboundHandshakeInfo(c net.Conn, br *bufio.Reader) (peerIde
 		Nonce:     nonceHex,
 		NodeID:    s.nodeID,
 		Advertise: s.AdvertiseAddr(),
-		Caps:      localCaps(),
+		Caps:      append(localCaps(), authCaps(s.c().ClusterID)...),
 	})
 	if err != nil {
 		return id, fmt.Errorf("peer handshake: %w", err)
@@ -1016,8 +1017,11 @@ func (s *Service) runInboundHandshakeInfo(c net.Conn, br *bufio.Reader) (peerIde
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: p})
 		return id, fmt.Errorf("bad auth proof")
 	}
-	if !verifyPeerHMAC(s.c().SharedSecret, proof.Hmac, nonce) {
-		s.logPeerAuthFailure(remote, "hmac verification failed")
+	// Verified against this node's own identifier. A peer from another cluster computed its
+	// proof over a different one, so the comparison fails as an ordinary bad secret would, and
+	// nothing here reveals which cluster this node belongs to.
+	if !verifyPeerHMAC(s.c().SharedSecret, proof.Hmac, nonce, bindClusterID(hello.Caps, s.c().ClusterID)) {
+		s.logPeerAuthFailure(remote, "hmac verification failed (a cluster_id mismatch looks the same as a wrong shared_secret)")
 		p, _ := json.Marshal(wireAck{Err: "bad auth"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: p})
 		return id, fmt.Errorf("hmac mismatch")
@@ -1082,12 +1086,16 @@ func (s *Service) handshakeOutInfo(c net.Conn) (*bufio.Reader, peerIdentity, err
 func (s *Service) handshakeOutCaps(c net.Conn, caps []string) (*bufio.Reader, peerIdentity, error) {
 	var id peerIdentity
 	secret := s.c().SharedSecret
+	clusterID := s.c().ClusterID
+	// The cluster capability is appended whatever the caller asked for: it decides how the proof
+	// is computed rather than how the session behaves, so a bootstrap dial that advertises no
+	// session capabilities must still carry it or it could authenticate to another cluster.
 	hPayload, err := json.Marshal(wireHello{
 		Op:        wireOpHello,
 		Ver:       PeerProtocolVersion,
 		NodeID:    s.nodeID,
 		Advertise: s.AdvertiseAddr(),
-		Caps:      caps,
+		Caps:      append(append([]string(nil), caps...), authCaps(clusterID)...),
 	})
 	if err != nil {
 		return nil, id, fmt.Errorf("peer handshake: %w", err)
@@ -1121,7 +1129,10 @@ func (s *Service) handshakeOutCaps(c net.Conn, caps []string) (*bufio.Reader, pe
 	if err != nil {
 		return nil, id, fmt.Errorf("peer nonce: %w", err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{
+		Op: wireOpAuth, Ver: PeerProtocolVersion,
+		Hmac: peerHMACHex(secret, nonce, bindClusterID(ack.Caps, clusterID)),
+	})
 	if err != nil {
 		return nil, id, fmt.Errorf("peer handshake: %w", err)
 	}
@@ -1152,6 +1163,7 @@ func (s *Service) handshakeOutCaps(c net.Conn, caps []string) (*bufio.Reader, pe
 	}
 	id.Advertise = strings.TrimSpace(ack.Advertise)
 	id.Duplex = hasCap(ack.Caps, CapDuplex)
+	id.Cluster = hasCap(ack.Caps, CapCluster)
 	id.Version = ack.Ver
 	return br, id, nil
 }

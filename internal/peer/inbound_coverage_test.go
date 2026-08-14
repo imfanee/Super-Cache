@@ -285,7 +285,7 @@ func TestInboundBootstrapRequestAfterAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestInboundReplicateFrameBootstrapOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestInboundHeartbeatAckPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestInboundHandshakeAuthWrongProofOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: "NOPE", Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{Op: "NOPE", Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}

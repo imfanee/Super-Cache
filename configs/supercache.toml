@@ -115,6 +115,17 @@ peers = ["89.167.15.232:7379"]
 # Optional host:port of one peer to pull a full snapshot from once at startup (empty = skip).
 bootstrap_peer = ""
 
+# Names the cluster this node belongs to; must be identical on every node in it.
+#
+# The shared secret alone cannot separate two clusters. A node built from another cluster's image
+# carries that cluster's secret, so it authenticates, joins, and takes that cluster's data with
+# it. Give each cluster its own cluster_id and that becomes impossible.
+#
+# The value is never sent on the wire: it is folded into the authentication proof, so a mismatch
+# fails exactly like a wrong secret and no node can be asked which cluster it belongs to.
+# Two nodes only apply it when both have one set, so it takes effect once the whole fleet does.
+# cluster_id = "voip-prod"
+
 # Required cluster shared secret; must be at least 32 characters.
 shared_secret = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET_AT_LEAST_32_CHARS"
 

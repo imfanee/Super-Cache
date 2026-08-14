@@ -318,7 +318,7 @@ func TestBootstrapInboundBufferDrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}

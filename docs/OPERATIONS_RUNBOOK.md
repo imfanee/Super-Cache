@@ -109,9 +109,19 @@ Pass it on the command line, never in the configuration file. A file travels ins
 image, so every node cloned from it would found its own cluster and the fleet would fragment one
 instance at a time.
 
-Change `shared_secret` as well. Two clusters sharing a secret are one cluster: if the old nodes
-are reachable, a node from the new group will authenticate and join them, taking their data with
-it. Clearing `peers` and `advertise_addr` in the new image avoids the pointless dial attempts.
+Give the new group its own `cluster_id`. Without one, two clusters sharing a secret are one
+cluster: if the old nodes are reachable, a node from the new group authenticates and joins them,
+taking their data with it. With one, that node is rejected however reachable the old cluster is.
+
+The identifier is folded into the authentication proof rather than compared on the wire, so a
+mismatch fails exactly like a wrong secret. That means a rejected node logs only
+`hmac verification failed` — check `cluster_id` before assuming the secret is wrong.
+
+Two nodes apply it only when both have one set, so it protects nothing until every node in both
+clusters has been given one. Until then, changing `shared_secret` remains the boundary.
+
+Clearing `peers` and `advertise_addr` in the new image avoids pointless dial attempts, but is not
+itself a safety boundary.
 
 ### Peer Discovery on Hetzner
 

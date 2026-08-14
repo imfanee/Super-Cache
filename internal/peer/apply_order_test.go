@@ -180,7 +180,7 @@ func authenticateAs(t *testing.T, c net.Conn, secret string) *bufio.Reader {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proof, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -129,7 +129,7 @@ func (l *legacyPeerServer) serve(c net.Conn) {
 	if json.Unmarshal(msg2.Payload, &proof) != nil {
 		return
 	}
-	if !verifyPeerHMAC(l.secret, proof.Hmac, nonce) {
+	if !verifyPeerHMAC(l.secret, proof.Hmac, nonce, "") {
 		p, _ := json.Marshal(wireAck{Err: "bad auth"})
 		_ = WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAck, Payload: p})
 		return
@@ -199,7 +199,7 @@ func legacyDial(t *testing.T, addr, secret string) (net.Conn, *bufio.Reader) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pp, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	pp, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}

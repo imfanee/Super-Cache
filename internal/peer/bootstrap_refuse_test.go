@@ -82,7 +82,7 @@ func bootstrapProbe(t *testing.T, syncing bool) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, _ := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proof, _ := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err := WriteMessage(c, PeerMessage{Version: 1, Type: MsgTypeAuth, Payload: proof}); err != nil {
 		t.Fatal(err)
 	}
