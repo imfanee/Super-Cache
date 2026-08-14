@@ -160,17 +160,12 @@ func (s *Service) handleDuplexRepl(ctx context.Context, addr string, msg PeerMes
 		return
 	}
 	s.noteReplArrival(wr)
-	if s.inboundCh == nil {
+	if !s.enqueueInbound(ctx, addr, wr) {
 		// No worker pool: the service was never started via Run (unit tests drive sessions
 		// directly). Apply inline rather than dropping the write.
 		if err := applyWireRepl(s.st, wr); err != nil {
 			slog.Error("peer apply", "err", err)
 		}
-		return
-	}
-	select {
-	case s.inboundCh <- inboundReplJob{s: s, remote: addr, wr: wr}:
-	case <-ctx.Done():
 	}
 }
 

@@ -106,8 +106,11 @@ type Service struct {
 	// skipped sequence can be noticed. Values are *atomic.Uint64.
 	originSeq sync.Map
 
-	inboundCh chan inboundReplJob
-	inboundWg sync.WaitGroup
+	// inboundShards each have exactly one worker, and every event from a given origin is routed
+	// to the same shard. Applying one origin's events concurrently reordered them, so a peer's
+	// later write to a key could be overwritten by its own earlier one.
+	inboundShards []chan inboundReplJob
+	inboundWg     sync.WaitGroup
 
 	configMu sync.Mutex // serializes AddPeer/RemovePeer config mutations
 }
@@ -435,13 +438,19 @@ func (s *Service) Run(ctx context.Context) error {
 	if nWorkers < 1 {
 		nWorkers = 1
 	}
-	s.inboundCh = make(chan inboundReplJob, nWorkers)
+	// Each shard is drained by a single worker, which is what preserves per-origin order. The
+	// buffer is generous because the sender is the goroutine reading a peer's connection, and
+	// blocking it would also stall that connection's heartbeats.
+	const inboundShardDepth = 1024
+	s.inboundShards = make([]chan inboundReplJob, nWorkers)
 	for i := 0; i < nWorkers; i++ {
+		ch := make(chan inboundReplJob, inboundShardDepth)
+		s.inboundShards[i] = ch
 		s.inboundWg.Add(1)
-		go func() {
+		go func(c <-chan inboundReplJob) {
 			defer s.inboundWg.Done()
-			s.inboundWorkerLoop(ctx)
-		}()
+			s.inboundWorkerLoop(ctx, c)
+		}(ch)
 	}
 
 	go func() {
@@ -583,10 +592,10 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 				}
 				return
 			}
-			select {
-			case s.inboundCh <- inboundReplJob{s: s, remote: remote, wr: wr}:
-			case <-ctx.Done():
-				return
+			if !s.enqueueInbound(ctx, remote, wr) {
+				if err := applyWireRepl(s.st, wr); err != nil {
+					slog.Error("peer apply", "err", err)
+				}
 			}
 		default:
 			continue
@@ -791,12 +800,51 @@ func (s *Service) stopInboundReplLink(link *outPeer) {
 	}
 }
 
-func (s *Service) inboundWorkerLoop(ctx context.Context) {
+// inboundShardFor picks the worker that applies a peer's events.
+//
+// Routing is by origin so that one peer's stream is always applied by one worker, in the order
+// it was sent. Events from different origins have no defined order relative to each other, so
+// spreading them across workers is free. A peer too old to name itself is routed by the
+// connection it arrived on, which is equally stable.
+func (s *Service) inboundShardFor(origin, remote string) chan inboundReplJob {
+	if len(s.inboundShards) == 0 {
+		return nil
+	}
+	key := strings.TrimSpace(origin)
+	if key == "" {
+		key = remote
+	}
+	if len(s.inboundShards) == 1 {
+		return s.inboundShards[0]
+	}
+	var h uint32 = 2166136261 // FNV-1a
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return s.inboundShards[int(h%uint32(len(s.inboundShards)))]
+}
+
+// enqueueInbound hands one event to the worker that owns its origin. It reports false when the
+// service has no workers, which happens in tests that drive sessions without starting Run.
+func (s *Service) enqueueInbound(ctx context.Context, remote string, wr wireRepl) bool {
+	ch := s.inboundShardFor(wr.Origin, remote)
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- inboundReplJob{s: s, remote: remote, wr: wr}:
+	case <-ctx.Done():
+	}
+	return true
+}
+
+func (s *Service) inboundWorkerLoop(ctx context.Context, in <-chan inboundReplJob) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case job, ok := <-s.inboundCh:
+		case job, ok := <-in:
 			if !ok {
 				return
 			}
