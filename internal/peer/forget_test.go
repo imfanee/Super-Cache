@@ -7,7 +7,10 @@
 package peer
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -200,6 +203,112 @@ func TestManualPeerIsNeverForgotten(t *testing.T) {
 	for _, a := range got {
 		if a == "203.0.113.60:7379" {
 			t.Fatal("a manually added peer must never be forgotten")
+		}
+	}
+}
+
+func leaveMsg(nodeID, advertise string) PeerMessage {
+	p, _ := json.Marshal(wireLeave{Op: wireOpLeave, NodeID: nodeID, Advertise: advertise})
+	return PeerMessage{Version: 1, Type: MsgTypeLeave, NodeID: nodeID, Payload: p}
+}
+
+// TestLeaveForgetsDepartingPeer is the point of the announcement: a planned departure is acted
+// on at once instead of waiting out the unreachability window.
+func TestLeaveForgetsDepartingPeer(t *testing.T) {
+	svc := newForgetService(t)
+	addPeers(t, svc, SourceLearned, "203.0.113.80:7379", "203.0.113.81:7379")
+
+	svc.handleLeave(leaveMsg("peer-80", "203.0.113.80:7379"), "")
+	if _, ok := svc.PeerSourceOf("203.0.113.80:7379"); ok {
+		t.Fatal("expected the departing peer to be forgotten immediately")
+	}
+	if _, ok := svc.PeerSourceOf("203.0.113.81:7379"); !ok {
+		t.Fatal("the other peer must be untouched")
+	}
+}
+
+// TestLeaveFallsBackToConnectionAddress covers a peer too old to advertise an address in its
+// announcement, where the link it arrived on is the only identification available.
+func TestLeaveFallsBackToConnectionAddress(t *testing.T) {
+	svc := newForgetService(t)
+	addPeers(t, svc, SourceLearned, "203.0.113.82:7379", "203.0.113.83:7379")
+	svc.handleLeave(leaveMsg("peer-82", ""), "203.0.113.82:7379")
+	if _, ok := svc.PeerSourceOf("203.0.113.82:7379"); ok {
+		t.Fatal("expected the peer to be forgotten using the connection address")
+	}
+}
+
+// TestLeaveCannotRemoveConfiguredPeer is the security-shaped property. A departure announcement
+// is unverified beyond the shared secret, so it must not override the operator's own list.
+func TestLeaveCannotRemoveConfiguredPeer(t *testing.T) {
+	svc := newForgetService(t)
+	svc.NoteConfigPeers([]string{"203.0.113.84:7379"})
+	addPeers(t, svc, SourceConfig, "203.0.113.84:7379")
+	addPeers(t, svc, SourceLearned, "203.0.113.85:7379")
+
+	svc.handleLeave(leaveMsg("peer-84", "203.0.113.84:7379"), "")
+	if src, ok := svc.PeerSourceOf("203.0.113.84:7379"); !ok || src != SourceConfig {
+		t.Fatal("a configured peer must not be removed by a leave announcement")
+	}
+}
+
+// TestLeaveCannotEmptyThePeerList keeps the last-peer guard in force here too, so a peer cannot
+// talk this node out of the cluster by announcing a departure.
+func TestLeaveCannotEmptyThePeerList(t *testing.T) {
+	svc := newForgetService(t)
+	addPeers(t, svc, SourceLearned, "203.0.113.86:7379")
+	svc.handleLeave(leaveMsg("peer-86", "203.0.113.86:7379"), "")
+	if _, ok := svc.PeerSourceOf("203.0.113.86:7379"); !ok {
+		t.Fatal("the only remaining peer must survive a leave announcement")
+	}
+}
+
+// TestLeaveIgnoresOurOwnAddress covers an announcement reflected back, which must not make a
+// node forget itself out of its own list.
+func TestLeaveIgnoresOurOwnAddress(t *testing.T) {
+	svc := newForgetService(t)
+	addPeers(t, svc, SourceLearned, "203.0.113.87:7379", "203.0.113.88:7379")
+	svc.SetAdvertiseAddr("203.0.113.87:7379")
+	svc.handleLeave(leaveMsg(svc.nodeID, "203.0.113.87:7379"), "")
+	if _, ok := svc.PeerSourceOf("203.0.113.87:7379"); !ok {
+		t.Fatal("a node must ignore a leave naming itself")
+	}
+}
+
+func TestLeaveIgnoresMalformedPayload(t *testing.T) {
+	svc := newForgetService(t)
+	addPeers(t, svc, SourceLearned, "203.0.113.89:7379", "203.0.113.90:7379")
+	svc.handleLeave(PeerMessage{Version: 1, Type: MsgTypeLeave, Payload: []byte("{not json")}, "")
+	if _, ok := svc.PeerSourceOf("203.0.113.89:7379"); !ok {
+		t.Fatal("a malformed announcement must change nothing")
+	}
+}
+
+// TestAnnounceLeaveWritesToEveryLink checks the sending half reaches each peer.
+func TestAnnounceLeaveWritesToEveryLink(t *testing.T) {
+	svc := newForgetService(t)
+	svc.SetAdvertiseAddr("203.0.113.91:7379")
+	var bufs []*bytes.Buffer
+	for i := 0; i < 3; i++ {
+		var b bytes.Buffer
+		bufs = append(bufs, &b)
+		svc.registerOut(&outPeer{addr: "10.0.0.1:7379", w: bufio.NewWriter(&b)})
+	}
+	svc.AnnounceLeave()
+	for i, b := range bufs {
+		msg, err := ReadMessage(bufio.NewReader(bytes.NewReader(b.Bytes())))
+		if err != nil {
+			t.Fatalf("link %d received nothing readable: %v", i, err)
+		}
+		if NormalizePeerMessage(msg).Type != MsgTypeLeave {
+			t.Fatalf("link %d got %q, want a leave", i, msg.Type)
+		}
+		var lv wireLeave
+		if err := json.Unmarshal(msg.Payload, &lv); err != nil {
+			t.Fatal(err)
+		}
+		if lv.Advertise != "203.0.113.91:7379" {
+			t.Fatalf("leave must name the departing address, got %q", lv.Advertise)
 		}
 	}
 }

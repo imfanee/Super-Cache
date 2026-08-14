@@ -35,6 +35,8 @@ const (
 	MsgTypeBootstrapChunk MsgType = "BS_CHUNK"
 	// MsgTypeBootstrapDone terminates a snapshot stream.
 	MsgTypeBootstrapDone MsgType = "BS_DONE"
+	// MsgTypeLeave announces that the sender is shutting down and should be forgotten.
+	MsgTypeLeave MsgType = "LEAVE"
 )
 
 // PeerMessage is the JSON payload after the 8-byte header (magic + length).

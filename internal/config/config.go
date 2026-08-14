@@ -109,6 +109,14 @@ type Config struct {
 	// HetznerAPIURL overrides the API root, for an outbound proxy or a test double. Empty uses
 	// the real API.
 	HetznerAPIURL string `toml:"hetzner_api_url" yaml:"hetzner_api_url"`
+	// AnnounceLeave makes a node tell its peers it is shutting down, so they drop its address
+	// immediately instead of waiting out PeerForgetAfter. Enabled by default.
+	//
+	// It is best effort: a node killed outright announces nothing, and the unreachability
+	// window remains the backstop. Set to false where a restart should leave membership
+	// untouched, at the cost of every rolling restart being invisible to peers until they
+	// notice on their own.
+	AnnounceLeave *bool `toml:"announce_leave" yaml:"announce_leave"`
 	// PeerForgetAfter is how long, in seconds, a peer that was learned rather than configured
 	// may stay unreachable before it is removed. 0 uses the default; negative keeps every
 	// address forever, which is the behaviour before this setting existed.
@@ -429,6 +437,15 @@ func ValidatePeerAddr(s string) error {
 
 // AutoDiscoverPeersEnabled reports whether this node adds peers that authenticate to it.
 // Unset means enabled, so an existing config file keeps working and gains the behaviour.
+// AnnounceLeaveEnabled reports whether this node tells peers it is shutting down. Absent from
+// the file means enabled: a departure nobody is told about is the case this exists to fix.
+func (c *Config) AnnounceLeaveEnabled() bool {
+	if c == nil || c.AnnounceLeave == nil {
+		return true
+	}
+	return *c.AnnounceLeave
+}
+
 func (c *Config) AutoDiscoverPeersEnabled() bool {
 	if c == nil || c.AutoDiscoverPeers == nil {
 		return true
@@ -613,6 +630,9 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if a.PeerForgetAfter != b.PeerForgetAfter {
 		blocked = append(blocked, "peer_forget_after")
+	}
+	if a.AnnounceLeaveEnabled() != b.AnnounceLeaveEnabled() {
+		hot = append(hot, "announce_leave")
 	}
 	if strings.TrimSpace(a.MgmtTCPBind) != strings.TrimSpace(b.MgmtTCPBind) {
 		blocked = append(blocked, "mgmt_tcp_bind")

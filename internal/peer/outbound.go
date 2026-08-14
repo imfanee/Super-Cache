@@ -129,6 +129,11 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 			s.handleDuplexRepl(ctx, addr, msg)
 			continue
 		}
+		if msg.Type == MsgTypeLeave {
+			// A peer this node dialled can announce its own departure down the same link.
+			s.handleLeave(msg, addr)
+			continue
+		}
 		if msg.Type != MsgTypeHeartbeat {
 			continue
 		}

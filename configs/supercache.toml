@@ -74,6 +74,12 @@ peers = ["89.167.15.232:7379"]
 # so a node can never forget its way out of the cluster.
 # peer_forget_after = 3600
 
+# Tell peers this node is shutting down, so they drop its address at once instead of waiting out
+# peer_forget_after (default true). Best effort: a node killed outright announces nothing, and
+# the window above stays the backstop. A restart therefore also announces a departure, and the
+# node is learned again when it comes back; set this to false where that churn is unwanted.
+# announce_leave = true
+
 # Add any peer that successfully authenticates to this node, so a node created by an autoscaler is
 # reachable without editing every existing node's configuration (default true). Peers are
 # authenticated by shared_secret either way, so this controls which authenticated nodes receive

@@ -23,6 +23,7 @@ const (
 	wireOpHeartbeat    = "HEARTBEAT"
 	wireOpHeartbeatAck = "HEARTBEAT_ACK"
 	wireOpPeerAnnounce = "PEER_ANNOUNCE"
+	wireOpLeave        = "LEAVE"
 )
 
 // MaxPeerPayload is the maximum allowed JSON payload size for one framed message (32 MiB).
@@ -40,6 +41,17 @@ type wireHeartbeat struct {
 type wirePeerAnnounce struct {
 	Op    string   `json:"op"`
 	Peers []string `json:"peers"`
+}
+
+// wireLeave is sent to every peer during a graceful shutdown.
+//
+// It turns a departure that would otherwise take an hour to notice into something immediate.
+// Advertise identifies which address is going away, since that is what the receiver holds in
+// its peer list; NodeID is carried for logging and to recognise the sender.
+type wireLeave struct {
+	Op        string `json:"op"`
+	NodeID    string `json:"node_id,omitempty"`
+	Advertise string `json:"adv,omitempty"`
 }
 
 // wireAck is the response to successful AUTH proof.
@@ -172,6 +184,8 @@ func NormalizePeerMessage(msg PeerMessage) PeerMessage {
 		msg.Type = MsgTypeHeartbeat
 	case wireOpPeerAnnounce:
 		msg.Type = MsgTypeNodeList
+	case wireOpLeave:
+		msg.Type = MsgTypeLeave
 	case wireOpBootstrap:
 		msg.Type = MsgTypeBootstrapReq
 	case wireOpBootstrapEnd:

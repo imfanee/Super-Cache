@@ -602,6 +602,9 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 				continue
 			}
 			continue
+		case MsgTypeLeave:
+			s.handleLeave(msg, id.Advertise)
+			continue
 		case MsgTypeBootstrapReq:
 			if s.refuseBootstrapWhileSyncing(remote) {
 				return

@@ -601,6 +601,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 
+	// Tell peers this node is leaving while its links are still open. Everything after this
+	// closes them, and an announcement has nowhere to travel once they are gone. Queued
+	// replication is flushed first so a peer receives this node's last writes before being told
+	// it is going: acting on the announcement costs that peer its connection here.
+	if s.peer != nil && s.config().AnnounceLeaveEnabled() {
+		s.peer.DrainReplicationOutbound(shutdownCtx)
+		s.peer.AnnounceLeave()
+	}
+	if deadlineReached("announce leave") {
+		return nil
+	}
+
 	// Tear down peer connections early so replication waits cannot block shutdown.
 	if s.peer != nil {
 		s.peer.CloseActiveConnections()

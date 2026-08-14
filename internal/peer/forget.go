@@ -7,6 +7,7 @@
 package peer
 
 import (
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"time"
@@ -144,4 +145,74 @@ func (s *Service) PeerSourceOf(addr string) (PeerSource, bool) {
 		return "", false
 	}
 	return m.source, true
+}
+
+// AnnounceLeave tells every connected peer that this node is shutting down, so its address is
+// dropped now rather than after the unreachability window expires.
+//
+// This is best effort by nature: a node killed outright, or one whose network has already gone,
+// sends nothing, and the timeout above remains the backstop. Sending is bounded by the caller's
+// shutdown deadline like every other step of a graceful stop.
+func (s *Service) AnnounceLeave() {
+	payload, err := json.Marshal(wireLeave{
+		Op:        wireOpLeave,
+		NodeID:    s.nodeID,
+		Advertise: s.AdvertiseAddr(),
+	})
+	if err != nil {
+		return
+	}
+	msg := PeerMessage{Version: 1, Type: MsgTypeLeave, NodeID: s.nodeID, Payload: payload}
+
+	s.mu.RLock()
+	links := append([]*outPeer(nil), s.out...)
+	s.mu.RUnlock()
+
+	sent := 0
+	for _, l := range links {
+		if l == nil || l.w == nil {
+			continue
+		}
+		// Serialised with the replication writer, which may still be flushing the last of the
+		// drained queue onto this same socket.
+		l.mu.Lock()
+		err := WriteMessage(l.w, msg)
+		if err == nil {
+			err = l.w.Flush()
+		}
+		l.mu.Unlock()
+		if err == nil {
+			sent++
+		}
+	}
+	if sent > 0 {
+		slog.Info("announced departure to peers", "peers", sent)
+	}
+}
+
+// handleLeave removes a peer that said it is shutting down.
+//
+// The same rules as every other removal apply: an address from the configuration file or the
+// management API stays, and the last remaining peer stays, so a peer cannot talk this node out
+// of the cluster by announcing a departure. The address is learned again if it comes back.
+func (s *Service) handleLeave(msg PeerMessage, connAddr string) {
+	var lv wireLeave
+	if err := json.Unmarshal(msg.Payload, &lv); err != nil {
+		return
+	}
+	addr := strings.TrimSpace(lv.Advertise)
+	if addr == "" {
+		addr = strings.TrimSpace(connAddr)
+	}
+	if addr == "" || s.isSelf(strings.TrimSpace(lv.NodeID), addr) {
+		return
+	}
+	want := config.NormalizePeerAddr(addr)
+	dropped := s.forgetCandidates(func(m *peerMeta, _ bool) bool {
+		return config.NormalizePeerAddr(m.addr) == want
+	})
+	for _, a := range dropped {
+		slog.Info("peer announced it is leaving; forgetting it", "addr", a, "node_id", lv.NodeID)
+		_ = s.RemovePeer(a)
+	}
 }

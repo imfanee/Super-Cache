@@ -101,10 +101,19 @@ func main() {
 		logCleanup = nc
 	})
 
+	// Closed when a signal arrives, and again once the shutdown it starts has finished. Run
+	// returns as soon as the client listener closes, which is the first thing shutdown does, so
+	// without waiting for these the process would exit while the rest of shutdown was still
+	// running: peers would never be told this node is leaving, replication would not be drained,
+	// and undelivered writes would not be spilled.
+	signalled := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
+		close(signalled)
+		defer close(shutdownDone)
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer shutdownCancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -123,8 +132,22 @@ func main() {
 		}
 	}()
 
-	if err := srv.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Error("server", "err", err)
+	runErr := srv.Run(ctx)
+
+	// Run returning is not the end when a signal caused it. The brief wait covers the race where
+	// Run observes the closed listener before the signal handler has recorded that it started.
+	select {
+	case <-signalled:
+	case <-time.After(250 * time.Millisecond):
+	}
+	select {
+	case <-signalled:
+		<-shutdownDone
+	default:
+	}
+
+	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		slog.Error("server", "err", runErr)
 		os.Exit(1)
 	}
 }

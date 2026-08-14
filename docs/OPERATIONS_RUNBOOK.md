@@ -145,6 +145,15 @@ the management API, and the last remaining peer. The last of those matters most 
 forgets its final peer can only rejoin by being contacted, so if both sides of a long partition
 emptied their lists neither would reconnect.
 
+A node being stopped gracefully announces its departure to every peer first, so a planned
+scale-in or decommission is acted on immediately rather than an hour later. This is best effort:
+a node killed outright announces nothing and the window above remains the backstop. A restart
+announces a departure too, and the node is learned again when it returns; set `announce_leave`
+to false where that churn is unwanted.
+
+An announcement is subject to the same rules as any other removal, so a peer cannot use one to
+talk this node out of its configured list or empty it entirely.
+
 Removal is recoverable, not permanent. A node that returns is learned again when it connects,
 and one that reappears in a listing is re-added.
 
