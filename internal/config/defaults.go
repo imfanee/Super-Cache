@@ -32,6 +32,11 @@ const DefaultHeartbeatInterval = 5
 // faster buys nothing and only adds API calls.
 const DefaultDiscoveryInterval = 60
 
+// DefaultPeerForgetAfter is how long a learned peer may stay unreachable before it is removed,
+// in seconds. An hour is far longer than a reboot or a deploy, so an address only reaches it
+// after the machine has genuinely gone.
+const DefaultPeerForgetAfter = 3600
+
 // DefaultHeartbeatTimeout is the default peer heartbeat timeout in seconds.
 const DefaultHeartbeatTimeout = 15
 

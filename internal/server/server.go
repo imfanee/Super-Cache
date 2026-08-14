@@ -378,6 +378,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// Discovery starts before bootstrap so a node whose configured addresses are all stale can
 	// still find a snapshot source rather than waiting out the retry loop with nowhere to sync
 	// from.
+	// Addresses from the file are the operator's intent and are never removed automatically,
+	// however long they stay unreachable.
+	s.peer.NoteConfigPeers(c.Peers)
+	go s.runPeerReaper(ctx)
+
 	if providers := discoveryProviders(c); len(providers) > 0 {
 		s.discoveryEnabled.Store(true)
 		go s.runPeerDiscovery(ctx, providers)

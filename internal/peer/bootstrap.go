@@ -164,7 +164,7 @@ func (s *Service) tryConsumePeerAnnounceBootstrap(c net.Conn, br *bufio.Reader) 
 		return fmt.Errorf("invalid PEER_ANNOUNCE")
 	}
 	for _, p := range pa.Peers {
-		_ = s.AddPeer(p)
+		_ = s.AddPeerFrom(p, SourceLearned)
 	}
 	return nil
 }

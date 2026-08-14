@@ -42,7 +42,7 @@ func (s *Service) consumeOptionalPeerAnnounce(c net.Conn, br *bufio.Reader) erro
 		return fmt.Errorf("peer: expected PEER_ANNOUNCE when gossip_peers is enabled")
 	}
 	for _, p := range pa.Peers {
-		_ = s.AddPeer(p)
+		_ = s.AddPeerFrom(p, SourceLearned)
 	}
 	return nil
 }

@@ -125,6 +125,29 @@ Two behaviours worth knowing before enabling this:
   until a listing succeeds and reports nobody. An empty answer is the only evidence that the
   node is genuinely alone rather than joining an established cluster.
 
+### Removing Peers That Have Gone
+
+Peers are added automatically, so something has to remove them or an autoscaled fleet keeps the
+address of every instance it has ever destroyed, each with a goroutine redialling it and each
+persisted across restarts by `peer_state_file`.
+
+A peer is removed when either is true:
+
+- A successful discovery listing no longer names it, and it is not currently connected. An
+  inventory is authoritative: a machine it does not list does not exist. Only addresses
+  discovery itself contributed are removed this way, since a peer learned from an inbound
+  connection may legitimately sit outside the label selector.
+- It has been unreachable for `peer_forget_after` (default one hour), far longer than a restart
+  or a deploy.
+
+Three things are never removed: addresses from the configuration file, addresses added through
+the management API, and the last remaining peer. The last of those matters most — a node that
+forgets its final peer can only rejoin by being contacted, so if both sides of a long partition
+emptied their lists neither would reconnect.
+
+Removal is recoverable, not permanent. A node that returns is learned again when it connects,
+and one that reappears in a listing is re-added.
+
 Watch `supercache_discovered_peers`. Zero on a fleet that should have peers means discovery is
 answering but finding nothing, usually a label selector that matches no instances.
 

@@ -109,6 +109,14 @@ type Config struct {
 	// HetznerAPIURL overrides the API root, for an outbound proxy or a test double. Empty uses
 	// the real API.
 	HetznerAPIURL string `toml:"hetzner_api_url" yaml:"hetzner_api_url"`
+	// PeerForgetAfter is how long, in seconds, a peer that was learned rather than configured
+	// may stay unreachable before it is removed. 0 uses the default; negative keeps every
+	// address forever, which is the behaviour before this setting existed.
+	//
+	// Without this an autoscaled fleet accumulates the address of every instance it has ever
+	// destroyed, each with a goroutine redialling it. Removal is recoverable: a node that
+	// returns is learned again when it connects.
+	PeerForgetAfter int `toml:"peer_forget_after" yaml:"peer_forget_after"`
 	// PeerStateFile is an optional JSON path to persist merged peer list across restarts (P2.5).
 	PeerStateFile string `toml:"peer_state_file" yaml:"peer_state_file"`
 	// ReplShutdownSpillPath is the JSON file written when pending outbound replication cannot be flushed before exit.
@@ -197,6 +205,9 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.DiscoveryInterval == 0 {
 		cfg.DiscoveryInterval = DefaultDiscoveryInterval
+	}
+	if cfg.PeerForgetAfter == 0 {
+		cfg.PeerForgetAfter = DefaultPeerForgetAfter
 	}
 	if cfg.MgmtSocket == "" {
 		cfg.MgmtSocket = DefaultMgmtSocket
@@ -599,6 +610,9 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if strings.TrimSpace(a.HetznerAPIURL) != strings.TrimSpace(b.HetznerAPIURL) {
 		blocked = append(blocked, "hetzner_api_url")
+	}
+	if a.PeerForgetAfter != b.PeerForgetAfter {
+		blocked = append(blocked, "peer_forget_after")
 	}
 	if strings.TrimSpace(a.MgmtTCPBind) != strings.TrimSpace(b.MgmtTCPBind) {
 		blocked = append(blocked, "mgmt_tcp_bind")

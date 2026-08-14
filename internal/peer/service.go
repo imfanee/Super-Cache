@@ -113,6 +113,43 @@ type Service struct {
 	inboundWg     sync.WaitGroup
 
 	configMu sync.Mutex // serializes AddPeer/RemovePeer config mutations
+
+	// peerMeta records how each address became known and when it last worked, which is what
+	// makes it possible to forget one that has gone away for good without also forgetting one
+	// the operator asked for.
+	peerMetaMu sync.Mutex
+	peerMeta   map[string]*peerMeta
+}
+
+// PeerSource records how an address became known, which decides whether it may ever be
+// forgotten automatically.
+type PeerSource string
+
+const (
+	// SourceConfig is an address from the configuration file. Never forgotten: it is the
+	// operator's stated intent, and a node that keeps retrying it costs one goroutine.
+	SourceConfig PeerSource = "config"
+	// SourceManual is an address added through the management API. Never forgotten, same
+	// reasoning.
+	SourceManual PeerSource = "manual"
+	// SourceDiscovery is an address a provider listed. A later listing that omits it is
+	// authoritative evidence the machine is gone.
+	SourceDiscovery PeerSource = "discovery"
+	// SourceLearned is an address learned from a peer that connected here, from a gossiped
+	// list, or from a copied configuration. Only time can say whether it is still real.
+	SourceLearned PeerSource = "learned"
+)
+
+// forgettable reports whether an address from this source may be removed automatically.
+func (p PeerSource) forgettable() bool {
+	return p == SourceDiscovery || p == SourceLearned
+}
+
+type peerMeta struct {
+	addr   string
+	source PeerSource
+	added  int64 // unix ms
+	lastOK int64 // unix ms of the last completed handshake; 0 when it has never worked
 }
 
 // inboundReplJob carries one replication frame for worker-pool apply (after handshake).
@@ -718,7 +755,7 @@ func (s *Service) learnPeerFromInbound(id peerIdentity, c net.Conn) {
 	if s.isSelf(id.NodeID, addr) {
 		return
 	}
-	if err := s.AddPeer(addr); err != nil {
+	if err := s.AddPeerFrom(addr, SourceLearned); err != nil {
 		// Already configured is the normal steady state, not a problem worth logging loudly.
 		slog.Debug("peer not added from inbound handshake", "addr", addr, "err", err)
 		return
@@ -1135,6 +1172,7 @@ func (s *Service) dialLoop(ctx context.Context, addr string) {
 			_ = c.Close()
 			return
 		}
+		s.markPeerReachable(addr)
 		if err := s.consumeOptionalPeerAnnounce(c, br); err != nil {
 			_ = c.Close()
 			if err := backoffSleep(ctx, attempt); err != nil {
@@ -1353,8 +1391,54 @@ func (s *Service) SyncPeersFromConfig(peers []string) {
 	}
 }
 
-// AddPeer appends a peer to the in-memory config and starts dialing it.
+// AddPeer appends a peer to the in-memory config and starts dialing it. The address is treated
+// as operator intent and is never forgotten automatically.
 func (s *Service) AddPeer(addr string) error {
+	return s.AddPeerFrom(addr, SourceManual)
+}
+
+// NoteConfigPeers marks the addresses that came from the configuration file, so they are never
+// removed by the cleanup below however long they stay unreachable.
+func (s *Service) NoteConfigPeers(addrs []string) {
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		s.recordPeerMeta(a, SourceConfig)
+	}
+}
+
+func (s *Service) recordPeerMeta(addr string, src PeerSource) {
+	key := config.NormalizePeerAddr(addr)
+	s.peerMetaMu.Lock()
+	defer s.peerMetaMu.Unlock()
+	if s.peerMeta == nil {
+		s.peerMeta = make(map[string]*peerMeta)
+	}
+	if m, ok := s.peerMeta[key]; ok {
+		// An address that is both configured and later discovered keeps the stronger claim.
+		if !src.forgettable() {
+			m.source = src
+		}
+		return
+	}
+	s.peerMeta[key] = &peerMeta{addr: addr, source: src, added: time.Now().UnixMilli()}
+}
+
+// markPeerReachable records that an address completed a handshake, which is the only evidence
+// that it is a real peer rather than a leftover.
+func (s *Service) markPeerReachable(addr string) {
+	key := config.NormalizePeerAddr(addr)
+	s.peerMetaMu.Lock()
+	defer s.peerMetaMu.Unlock()
+	if m, ok := s.peerMeta[key]; ok {
+		m.lastOK = time.Now().UnixMilli()
+	}
+}
+
+// AddPeerFrom is AddPeer, recording where the address came from.
+func (s *Service) AddPeerFrom(addr string, src PeerSource) error {
 	addr = strings.TrimSpace(addr)
 	if err := config.ValidatePeerAddr(addr); err != nil {
 		return err
@@ -1375,6 +1459,7 @@ func (s *Service) AddPeer(addr string) error {
 	newCfg.Peers = append(append([]string(nil), cfg.Peers...), addr)
 	s.cfg.Store(&newCfg)
 	s.configMu.Unlock()
+	s.recordPeerMeta(addr, src)
 	return s.ensureDial(addr)
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/supercache/supercache/internal/config"
 	"github.com/supercache/supercache/internal/discovery"
+	"github.com/supercache/supercache/internal/peer"
 )
 
 // hcloudTokenEnv is the environment variable the Hetzner CLI uses, accepted here so a token need
@@ -95,17 +96,51 @@ func (s *Server) discoverOnce(ctx context.Context, providers []discovery.Provide
 		s.discoveryListed.Store(true)
 		added := 0
 		for _, addr := range addrs {
-			// AddPeer rejects this node's own address and anything already known, so a listing
-			// that is mostly unchanged costs nothing.
-			if err := s.peer.AddPeer(addr); err != nil {
+			// AddPeerFrom rejects this node's own address and anything already known, so a
+			// listing that is mostly unchanged costs nothing.
+			if err := s.peer.AddPeerFrom(addr, peer.SourceDiscovery); err != nil {
 				continue
 			}
 			added++
 			slog.Info("discovered peer", "provider", p.Name(), "addr", addr)
 		}
+		// A listing that succeeded is authoritative about what exists, so anything it once
+		// contributed and no longer names has been destroyed and can be dropped. Doing this
+		// only after a successful call matters: a failed one says nothing at all.
+		removed := s.peer.ForgetPeersMissingFrom(addrs)
 		s.stats.setDiscoveredPeers(int64(len(addrs)))
-		if added > 0 {
-			slog.Info("peer discovery added nodes", "provider", p.Name(), "added", added, "listed", len(addrs))
+		if added > 0 || len(removed) > 0 {
+			slog.Info("peer discovery updated membership", "provider", p.Name(),
+				"added", added, "removed", len(removed), "listed", len(addrs))
+		}
+	}
+}
+
+// runPeerReaper removes learned peers that have been unreachable long enough to be considered
+// gone, for as long as the server runs.
+//
+// This is the half of membership that discovery cannot cover: a peer learned from an inbound
+// connection was never in any listing, so only the passage of time can say it is no longer
+// there. The window is deliberately far longer than a restart or a deploy.
+func (s *Server) runPeerReaper(ctx context.Context) {
+	after := time.Duration(s.config().PeerForgetAfter) * time.Second
+	if after <= 0 {
+		return
+	}
+	// Checking far more often than the window costs nothing and keeps removal prompt once an
+	// address does age out.
+	every := after / 10
+	if every < time.Minute {
+		every = time.Minute
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.peer.ForgetUnreachablePeers(after)
 		}
 	}
 }

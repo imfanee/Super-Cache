@@ -63,6 +63,17 @@ peers = ["89.167.15.232:7379"]
 # Servers with no private address are skipped, not reached over their public one: replication is
 # plaintext unless peer TLS is configured, and public traffic is billed.
 
+# How long, in seconds, a peer that was learned rather than configured may stay unreachable
+# before it is removed (default 3600). Negative keeps every address forever.
+#
+# Without this an autoscaled fleet accumulates the address of every instance it ever destroyed,
+# each with a goroutine redialling it and each persisted across restarts by peer_state_file.
+# Removal is recoverable: a node that comes back is learned again when it connects, and one that
+# is listed again by discovery is re-added. Addresses from this file, and any added through the
+# management API, are never removed however long they stay down. Nor is the last remaining peer,
+# so a node can never forget its way out of the cluster.
+# peer_forget_after = 3600
+
 # Add any peer that successfully authenticates to this node, so a node created by an autoscaler is
 # reachable without editing every existing node's configuration (default true). Peers are
 # authenticated by shared_secret either way, so this controls which authenticated nodes receive
