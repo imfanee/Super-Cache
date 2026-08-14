@@ -47,6 +47,12 @@ type stats struct {
 	// that would otherwise reveal the gap.
 	replDropped    atomic.Int64
 	replSendErrors atomic.Int64
+
+	// Replication events a peer sent that never reached this node, detected by a skip in its
+	// sequence numbers, plus stragglers arriving behind a sequence already seen.
+	replGapEvents    atomic.Int64
+	replMissedEvents atomic.Int64
+	replLateEvents   atomic.Int64
 }
 
 func newStats(nodeID string, clientPort int) *stats {
@@ -97,6 +103,32 @@ func (s *stats) AddReplicationDropped(n int64) {
 // AddReplicationSendError implements peer.PeerMetrics.
 func (s *stats) AddReplicationSendError(n int64) {
 	s.replSendErrors.Add(n)
+}
+
+// AddReplicationGap implements peer.PeerMetrics.
+func (s *stats) AddReplicationGap(missed int64) {
+	s.replGapEvents.Add(1)
+	s.replMissedEvents.Add(missed)
+}
+
+// AddReplicationLate implements peer.PeerMetrics.
+func (s *stats) AddReplicationLate(n int64) {
+	s.replLateEvents.Add(n)
+}
+
+// ReplicationGapEvents returns how many times a peer's sequence numbers skipped forward.
+func (s *stats) ReplicationGapEvents() int64 {
+	return s.replGapEvents.Load()
+}
+
+// ReplicationMissedEvents returns how many replication events never arrived, in total.
+func (s *stats) ReplicationMissedEvents() int64 {
+	return s.replMissedEvents.Load()
+}
+
+// ReplicationLateEvents returns events that arrived behind a sequence already seen.
+func (s *stats) ReplicationLateEvents() int64 {
+	return s.replLateEvents.Load()
 }
 
 // ReplicationDropped returns replication events discarded because a peer's queue was full.

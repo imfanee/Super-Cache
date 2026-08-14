@@ -237,6 +237,8 @@ func (c *captureBootstrapMetrics) SetBootstrapInboundQueueDepth(d int) {
 }
 func (c *captureBootstrapMetrics) AddReplicationDropped(n int64)   { c.dropped.Add(n) }
 func (c *captureBootstrapMetrics) AddReplicationSendError(n int64) { c.sendErrors.Add(n) }
+func (c *captureBootstrapMetrics) AddReplicationGap(int64)         {}
+func (c *captureBootstrapMetrics) AddReplicationLate(int64)        {}
 
 func TestBootstrapInboundBufferDrain(t *testing.T) {
 	secret := strings.Repeat("f", 32)

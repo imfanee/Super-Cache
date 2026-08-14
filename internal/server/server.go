@@ -41,14 +41,14 @@ type Server struct {
 	peer     *peer.Service
 	stats    *stats
 
-	listener  net.Listener
-	clientTLS *tls.Config // non-nil when Redis client port uses TLS
-	wg        sync.WaitGroup
-	listenerMu            sync.Mutex
+	listener               net.Listener
+	clientTLS              *tls.Config // non-nil when Redis client port uses TLS
+	wg                     sync.WaitGroup
+	listenerMu             sync.Mutex
 	listenerCloseRequested bool
 
-	sessionSeq atomic.Int64
-	activeConns sync.Map
+	sessionSeq   atomic.Int64
+	activeConns  sync.Map
 	shuttingDown atomic.Bool
 
 	cancelRun context.CancelFunc

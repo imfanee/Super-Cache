@@ -159,6 +159,7 @@ func (s *Service) handleDuplexRepl(ctx context.Context, addr string, msg PeerMes
 	if err := json.Unmarshal(msg.Payload, &wr); err != nil {
 		return
 	}
+	s.noteReplArrival(wr)
 	if s.inboundCh == nil {
 		// No worker pool: the service was never started via Run (unit tests drive sessions
 		// directly). Apply inline rather than dropping the write.

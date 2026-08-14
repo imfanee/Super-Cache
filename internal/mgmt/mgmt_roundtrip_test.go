@@ -60,12 +60,12 @@ func testSecret() string { return strings.Repeat("z", 32) }
 
 func newTestFakeExt() *fakeExt {
 	return &fakeExt{
-		uptime:    3,
-		clients:   2,
-		peers:     1,
-		mem:       100,
-		keys:      10,
-		bootstrap: "complete",
+		uptime:        3,
+		clients:       2,
+		peers:         1,
+		mem:           100,
+		keys:          10,
+		bootstrap:     "complete",
 		reloadChanged: []string{"log_level"},
 		peersList: []map[string]any{
 			{"address": "p1:1", "state": "connected"},

@@ -153,6 +153,9 @@ func cmdInfo(ctx *CommandContext) error {
 		// nothing else to report it.
 		fmt.Fprintf(&b, "replication_dropped:%d\r\n", ctx.Info.ReplicationDropped())
 		fmt.Fprintf(&b, "replication_send_errors:%d\r\n", ctx.Info.ReplicationSendErrors())
+		// Non-zero means a peer's events never arrived here, so this node is missing data the
+		// rest of the cluster has.
+		fmt.Fprintf(&b, "replication_missed_events:%d\r\n", ctx.Info.ReplicationMissedEvents())
 		for i, a := range addrs {
 			fmt.Fprintf(&b, "slave%d:ip=%s,state=online\r\n", i, a)
 		}

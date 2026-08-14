@@ -22,12 +22,16 @@ import (
 type countingMetrics struct {
 	dropped    atomic.Int64
 	sendErrors atomic.Int64
+	gapMissed  atomic.Int64
+	late       atomic.Int64
 }
 
 func (c *countingMetrics) SetReplicationStats(int, []string) {}
 func (c *countingMetrics) SetBootstrapInboundQueueDepth(int) {}
 func (c *countingMetrics) AddReplicationDropped(n int64)     { c.dropped.Add(n) }
 func (c *countingMetrics) AddReplicationSendError(n int64)   { c.sendErrors.Add(n) }
+func (c *countingMetrics) AddReplicationGap(n int64)         { c.gapMissed.Add(n) }
+func (c *countingMetrics) AddReplicationLate(n int64)        { c.late.Add(n) }
 
 func newFrameTestService(t *testing.T, metrics PeerMetrics) *Service {
 	t.Helper()

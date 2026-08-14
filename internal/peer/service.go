@@ -39,6 +39,11 @@ type PeerMetrics interface {
 	// AddReplicationSendError counts replication events whose socket write failed. The link is
 	// torn down afterwards, but the event itself is gone.
 	AddReplicationSendError(n int64)
+	// AddReplicationGap reports that a peer's sequence numbers skipped forward, meaning missed
+	// events never arrived. missed is how many.
+	AddReplicationGap(missed int64)
+	// AddReplicationLate counts events arriving with a sequence at or below one already seen.
+	AddReplicationLate(n int64)
 }
 
 // BootstrapObserver receives bootstrap pull progress (optional; may be nil).
@@ -96,6 +101,10 @@ type Service struct {
 	bootstrapActive  atomic.Bool
 
 	inboundLastHB sync.Map // remote TCP address -> last heartbeat unix ms (inbound path)
+
+	// originSeq maps a peer's node ID to the highest replication sequence seen from it, so a
+	// skipped sequence can be noticed. Values are *atomic.Uint64.
+	originSeq sync.Map
 
 	inboundCh chan inboundReplJob
 	inboundWg sync.WaitGroup
@@ -563,6 +572,7 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 			if err := json.Unmarshal(msg.Payload, &wr); err != nil {
 				continue
 			}
+			s.noteReplArrival(wr)
 			if strings.EqualFold(wr.Op, wireOpBootstrap) {
 				if s.refuseBootstrapWhileSyncing(remote) {
 					return
@@ -601,6 +611,60 @@ func (s *Service) refuseBootstrapWhileSyncing(remote string) bool {
 	slog.Warn("refusing bootstrap request while this node is still syncing; "+
 		"the requester will try another source", "remote", remote)
 	return true
+}
+
+// noteReplArrival records a replication event's sequence number and reports whether anything
+// from that peer went missing on the way here.
+//
+// Every event carries its origin and a per-origin sequence, but until now nothing read them, so
+// a dropped event left the two nodes silently disagreeing forever. Comparing each arrival with
+// the last one from the same origin turns that into something countable.
+//
+// This must be called from the goroutine reading the connection, which sees one link's events in
+// the order they were sent. The apply path cannot do it: inbound events are handed to a pool of
+// workers that process them concurrently, so order there reflects scheduling, not the wire.
+//
+// A peer that restarts begins again at sequence 1, which is recognised rather than reported as
+// an enormous backwards jump.
+func (s *Service) noteReplArrival(wr wireRepl) {
+	origin := strings.TrimSpace(wr.Origin)
+	if origin == "" || wr.Seq == 0 || origin == s.nodeID {
+		return
+	}
+	v, loaded := s.originSeq.LoadOrStore(origin, newSeqCounter(wr.Seq))
+	if !loaded {
+		return // first event from this peer: nothing to compare against
+	}
+	last := v.(*atomic.Uint64)
+	prev := last.Load()
+	switch {
+	case wr.Seq == prev+1:
+		last.Store(wr.Seq)
+	case wr.Seq > prev+1:
+		missed := wr.Seq - prev - 1
+		last.Store(wr.Seq)
+		if s.metrics != nil {
+			s.metrics.AddReplicationGap(int64(missed))
+		}
+		slog.Error("replication gap: events from a peer never arrived and this node has diverged from it",
+			"origin", origin, "missed", missed, "expected_seq", prev+1, "got_seq", wr.Seq)
+	case wr.Seq == 1:
+		// The peer restarted and its counter began again.
+		last.Store(wr.Seq)
+		slog.Info("peer replication sequence restarted", "origin", origin)
+	default:
+		// At or below a sequence already seen. Switching between two links to the same peer can
+		// deliver a straggler from the old one after the new one has moved ahead.
+		if s.metrics != nil {
+			s.metrics.AddReplicationLate(1)
+		}
+	}
+}
+
+func newSeqCounter(v uint64) *atomic.Uint64 {
+	c := &atomic.Uint64{}
+	c.Store(v)
+	return c
 }
 
 // writeHeartbeatAck replies to a peer heartbeat on an accepted connection, serialising with the

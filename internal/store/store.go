@@ -70,9 +70,9 @@ type shard struct {
 
 // Store is a concurrent sharded in-memory database.
 type Store struct {
-	shards [NumShards]shard
-	mem    atomic.Int64
-	cfg    atomic.Pointer[config.Config]
+	shards      [NumShards]shard
+	mem         atomic.Int64
+	cfg         atomic.Pointer[config.Config]
 	policyCache atomic.Value // string
 	maxMemCache atomic.Uint64
 

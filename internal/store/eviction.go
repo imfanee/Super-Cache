@@ -234,4 +234,3 @@ func evictVolatileTTL(s *Store, avoidKey string) bool {
 	sh.mu.Unlock()
 	return false
 }
-

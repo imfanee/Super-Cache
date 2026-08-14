@@ -135,6 +135,30 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 		},
 		func() float64 { return float64(s.stats.ReplicationSendErrors()) },
 	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_missed_events_total",
+			Help:      "Replication events a peer sent that never arrived, counted from gaps in its sequence numbers. Any increase means this node is missing data the cluster has.",
+		},
+		func() float64 { return float64(s.stats.ReplicationMissedEvents()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_gap_events_total",
+			Help:      "Number of times a peer's replication sequence skipped forward, regardless of how many events each skip covered.",
+		},
+		func() float64 { return float64(s.stats.ReplicationGapEvents()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_late_events_total",
+			Help:      "Replication events arriving at or below a sequence already seen, expected in small numbers when a link to a peer is replaced.",
+		},
+		func() float64 { return float64(s.stats.ReplicationLateEvents()) },
+	))
 	reg.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: "supercache",
