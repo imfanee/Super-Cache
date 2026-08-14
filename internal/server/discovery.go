@@ -159,15 +159,22 @@ func (s *Server) RequestResync(reason string) {
 	if !s.config().ResyncOnGapEnabled() {
 		return
 	}
-	// Already resyncing, or still doing its first sync: either way a second one adds nothing.
+	// Already resyncing, or still doing its first sync. The need is remembered rather than
+	// dropped, since the loss that prompted this is not undone by another resync being busy.
 	if !s.resyncing.CompareAndSwap(false, true) {
+		s.resyncPending.Store(true)
 		return
 	}
 	now := time.Now()
 	minGap := time.Duration(s.config().ResyncMinInterval) * time.Second
 	if last := s.lastResync.Load(); last != 0 && now.Sub(time.UnixMilli(last)) < minGap {
 		s.resyncing.Store(false)
-		slog.Warn("replication loss confirmed but a resync ran recently; staying diverged for now",
+		// Remembered, not dropped. A refused resync used to be forgotten entirely, and since the
+		// only thing that asks for one is a newly detected gap, a node that lost data while rate
+		// limited stayed diverged for as long as no further loss happened to occur — which, once
+		// the burst that caused it ended, was indefinitely.
+		s.resyncPending.Store(true)
+		slog.Warn("replication loss confirmed but a resync ran recently; deferring it",
 			"reason", reason, "min_interval", minGap)
 		return
 	}
@@ -177,6 +184,7 @@ func (s *Server) RequestResync(reason string) {
 		return
 	}
 	s.lastResync.Store(now.UnixMilli())
+	s.resyncPending.Store(false)
 	slog.Error("resyncing from a peer after confirmed replication loss; refusing commands until done",
 		"reason", reason)
 	s.clientReady.Store(false)
@@ -190,4 +198,25 @@ func (s *Server) RequestResync(reason string) {
 		s.bootstrapUntilSynced(ctx)
 		s.peer.ResetReplicationTracking()
 	}()
+}
+
+// runResyncDeferred carries out a resync that was asked for while one had just run.
+//
+// Without this the request is lost: the only thing that asks for a resync is a freshly detected
+// gap, so a node refused once stays diverged until more loss happens to occur. When the burst
+// that caused the loss has ended, that is never.
+func (s *Server) runResyncDeferred(ctx context.Context) {
+	const check = 30 * time.Second
+	t := time.NewTicker(check)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if s.resyncPending.Load() {
+				s.RequestResync("deferred after an earlier resync")
+			}
+		}
+	}
 }

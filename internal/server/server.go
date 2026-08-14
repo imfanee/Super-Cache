@@ -73,6 +73,9 @@ type Server struct {
 	// in unix ms, which is what the minimum interval is measured from.
 	resyncing  atomic.Bool
 	lastResync atomic.Int64
+	// resyncPending records a resync that was asked for but refused, so it happens once the
+	// minimum interval has passed rather than being forgotten.
+	resyncPending atomic.Bool
 
 	runCtxMu sync.Mutex
 	runCtx   context.Context
@@ -434,6 +437,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.peer.SetResyncRequester(s)
 	s.peer.NoteConfigPeers(c.Peers)
 	go s.runPeerReaper(ctx)
+	go s.runResyncDeferred(ctx)
 
 	if providers := discoveryProviders(c); len(providers) > 0 {
 		s.discoveryEnabled.Store(true)

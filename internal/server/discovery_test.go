@@ -297,3 +297,64 @@ func TestResyncWithoutRunContextIsSafe(t *testing.T) {
 		t.Fatal("the guard must be released")
 	}
 }
+
+// TestRefusedResyncIsRemembered is the defect a stress test exposed. A resync refused because
+// one had just run used to be forgotten, and since only a freshly detected gap ever asks for
+// one, a node that lost data during a burst stayed diverged once the burst ended — permanently,
+// while replicating new writes perfectly and reporting itself ready.
+func TestRefusedResyncIsRemembered(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	cfg := *srv.config()
+	cfg.ResyncMinInterval = 3600
+	srv.cfg.Store(&cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.setRunContext(ctx)
+
+	srv.lastResync.Store(time.Now().UnixMilli())
+	srv.clientReady.Store(true)
+	srv.RequestResync("loss during a burst")
+
+	if !srv.resyncPending.Load() {
+		t.Fatal("a refused resync must be remembered, or the loss is never repaired")
+	}
+	if srv.stats.Resyncs() != 0 {
+		t.Fatal("it must not have run yet")
+	}
+}
+
+// TestDeferredResyncRunsOnceAllowed confirms the remembered request is acted on rather than
+// merely recorded.
+func TestDeferredResyncRunsOnceAllowed(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.setRunContext(ctx)
+
+	// Owed, and the interval has since passed.
+	srv.resyncPending.Store(true)
+	srv.lastResync.Store(time.Now().Add(-time.Hour).UnixMilli())
+	srv.clientReady.Store(true)
+
+	srv.RequestResync("deferred")
+	if srv.stats.Resyncs() != 1 {
+		t.Fatalf("expected the deferred resync to run, got %d", srv.stats.Resyncs())
+	}
+	if srv.resyncPending.Load() {
+		t.Fatal("the request must be cleared once carried out")
+	}
+}
+
+// TestOverlappingResyncIsRemembered covers the other refusal path.
+func TestOverlappingResyncIsRemembered(t *testing.T) {
+	srv := newDiscoveryServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.setRunContext(ctx)
+	srv.resyncing.Store(true)
+
+	srv.RequestResync("loss while another resync runs")
+	if !srv.resyncPending.Load() {
+		t.Fatal("a request arriving during a resync must be remembered")
+	}
+}
