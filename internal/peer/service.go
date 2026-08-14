@@ -66,6 +66,11 @@ type Service struct {
 	// same node the choice of which one carries replication is stable rather than arbitrary.
 	linkSeq atomic.Uint64
 
+	// targetsGen changes whenever a link is registered or removed, invalidating targetsCache.
+	// Without the cache every write rebuilt the same selection from scratch.
+	targetsGen   atomic.Uint64
+	targetsCache atomic.Pointer[replTargets]
+
 	// mu guards out, which holds every link this node may send replication on: outbound dials
 	// plus, once the capability is negotiated, accepted connections. Two links to the same node
 	// are de-duplicated at send time by remote node ID, never at registration time, so a link
@@ -266,13 +271,33 @@ func preferLink(a, b *outPeer) bool {
 // Selection happens per call rather than at registration so that losing one link immediately
 // promotes the other with no gap.
 func (s *Service) replicationTargets() []*outPeer {
-	s.mu.RLock()
-	links := append([]*outPeer(nil), s.out...)
-	s.mu.RUnlock()
+	// Membership changes rarely and writes are constant, so the selection is cached and rebuilt
+	// only when a link is registered or removed. The returned slice is shared and must be
+	// treated as read-only by callers.
+	gen := s.targetsGen.Load()
+	if c := s.targetsCache.Load(); c != nil && c.gen == gen {
+		return c.links
+	}
+	links := s.computeReplicationTargets()
+	// A membership change racing this recompute leaves the entry tagged with the older
+	// generation, so the next caller simply rebuilds rather than reading a stale selection.
+	s.targetsCache.Store(&replTargets{gen: gen, links: links})
+	return links
+}
 
-	best := make(map[string]*outPeer, len(links))
-	order := make([]string, 0, len(links))
-	for _, l := range links {
+// replTargets is a cached link selection, valid only for the generation it was built from.
+type replTargets struct {
+	gen   uint64
+	links []*outPeer
+}
+
+func (s *Service) computeReplicationTargets() []*outPeer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	best := make(map[string]*outPeer, len(s.out))
+	order := make([]string, 0, len(s.out))
+	for _, l := range s.out {
 		if l == nil || l.replStop.Load() || l.replCh == nil {
 			continue
 		}
@@ -1018,6 +1043,7 @@ func (s *Service) registerOut(op *outPeer) {
 	op.linkSeq = s.linkSeq.Add(1)
 	s.mu.Lock()
 	s.out = append(s.out, op)
+	s.targetsGen.Add(1)
 	s.mu.Unlock()
 	s.refreshMetrics()
 }
@@ -1034,6 +1060,7 @@ func (s *Service) unregisterOut(addr string) {
 		}
 	}
 	s.out = dst
+	s.targetsGen.Add(1)
 	s.mu.Unlock()
 	s.refreshMetrics()
 }
@@ -1052,6 +1079,7 @@ func (s *Service) unregisterLink(target *outPeer) {
 		}
 	}
 	s.out = dst
+	s.targetsGen.Add(1)
 	s.mu.Unlock()
 	s.refreshMetrics()
 }

@@ -204,3 +204,53 @@ func BenchmarkReplicateFanOut(b *testing.B) {
 		})
 	}
 }
+
+// TestReplicationTargetsCacheInvalidates guards the cached link selection. A stale cache would
+// keep replicating to a link that is gone, or miss one that just appeared.
+func TestReplicationTargetsCacheInvalidates(t *testing.T) {
+	svc := newFrameTestService(t, nil)
+	if got := svc.replicationTargets(); len(got) != 0 {
+		t.Fatalf("expected no targets initially, got %d", len(got))
+	}
+	a := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan *replFrame, 1)}
+	svc.registerOut(a)
+	if got := svc.replicationTargets(); len(got) != 1 || got[0] != a {
+		t.Fatalf("registering a link must invalidate the cache, got %v", got)
+	}
+	b := &outPeer{addr: "10.0.0.2:7379", remoteID: "peer-2", replCh: make(chan *replFrame, 1)}
+	svc.registerOut(b)
+	if got := svc.replicationTargets(); len(got) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(got))
+	}
+	svc.unregisterLink(a)
+	got := svc.replicationTargets()
+	if len(got) != 1 || got[0] != b {
+		t.Fatalf("removing a link must invalidate the cache, got %v", got)
+	}
+}
+
+// TestReplicationTargetsCacheReused confirms the selection is not rebuilt per write, which was
+// the point of caching it.
+func TestReplicationTargetsCacheReused(t *testing.T) {
+	svc := newFrameTestService(t, nil)
+	svc.registerOut(&outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan *replFrame, 1)})
+	first := svc.replicationTargets()
+	second := svc.replicationTargets()
+	if &first[0] != &second[0] {
+		t.Fatal("expected the cached selection to be reused between calls")
+	}
+}
+
+// TestReplicationTargetsStillDeduplicates keeps the property the cache must not break: two links
+// to one node deliver a write once, or every non-idempotent operation corrupts.
+func TestReplicationTargetsStillDeduplicates(t *testing.T) {
+	svc := newFrameTestService(t, nil)
+	outbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan *replFrame, 1)}
+	inbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", inbound: true, replCh: make(chan *replFrame, 1)}
+	svc.registerOut(outbound)
+	svc.registerOut(inbound)
+	got := svc.replicationTargets()
+	if len(got) != 1 || got[0] != outbound {
+		t.Fatalf("two links to one node must yield one target, preferring the dial: %v", got)
+	}
+}
