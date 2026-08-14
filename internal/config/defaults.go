@@ -27,6 +27,11 @@ const DefaultPeerQueueDepth = 50000
 // DefaultHeartbeatInterval is the default heartbeat interval in seconds.
 const DefaultHeartbeatInterval = 5
 
+// DefaultDiscoveryInterval is how often peers are re-listed from discovery providers, in
+// seconds. Membership changes on the timescale of an autoscaler reacting to load, so polling
+// faster buys nothing and only adds API calls.
+const DefaultDiscoveryInterval = 60
+
 // DefaultHeartbeatTimeout is the default peer heartbeat timeout in seconds.
 const DefaultHeartbeatTimeout = 15
 

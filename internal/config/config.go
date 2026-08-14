@@ -90,6 +90,25 @@ type Config struct {
 	// Peers are still authenticated by shared secret either way, so this changes which
 	// authenticated nodes receive replication, not who may connect.
 	AutoDiscoverPeers *bool `toml:"auto_discover_peers" yaml:"auto_discover_peers"`
+	// DiscoveryInterval is how often, in seconds, peers are re-listed from discovery providers.
+	// 0 uses the default; negative disables periodic discovery. Re-listing matters because a
+	// node whose known addresses have all been replaced would otherwise stay isolated forever:
+	// its own dial loops keep retrying addresses that no longer exist and nothing ever tells it
+	// about the machines that took their place.
+	DiscoveryInterval int `toml:"discovery_interval" yaml:"discovery_interval"`
+	// HetznerAPIToken enables discovery from the Hetzner Cloud server inventory. Empty falls
+	// back to the HCLOUD_TOKEN environment variable, which keeps the token out of an image.
+	// A read-only token is sufficient; this only lists servers.
+	HetznerAPIToken string `toml:"hetzner_api_token" yaml:"hetzner_api_token"`
+	// HetznerLabelSelector restricts that listing, for example "role=supercache". Empty lists
+	// every server in the project.
+	HetznerLabelSelector string `toml:"hetzner_label_selector" yaml:"hetzner_label_selector"`
+	// HetznerNetworkID selects which private network to take an address from on a server
+	// attached to more than one. 0 uses the first reported.
+	HetznerNetworkID int64 `toml:"hetzner_network_id" yaml:"hetzner_network_id"`
+	// HetznerAPIURL overrides the API root, for an outbound proxy or a test double. Empty uses
+	// the real API.
+	HetznerAPIURL string `toml:"hetzner_api_url" yaml:"hetzner_api_url"`
 	// PeerStateFile is an optional JSON path to persist merged peer list across restarts (P2.5).
 	PeerStateFile string `toml:"peer_state_file" yaml:"peer_state_file"`
 	// ReplShutdownSpillPath is the JSON file written when pending outbound replication cannot be flushed before exit.
@@ -175,6 +194,9 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.HeartbeatTimeout == 0 {
 		cfg.HeartbeatTimeout = DefaultHeartbeatTimeout
+	}
+	if cfg.DiscoveryInterval == 0 {
+		cfg.DiscoveryInterval = DefaultDiscoveryInterval
 	}
 	if cfg.MgmtSocket == "" {
 		cfg.MgmtSocket = DefaultMgmtSocket
@@ -559,6 +581,24 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if a.MgmtSocket != b.MgmtSocket {
 		blocked = append(blocked, "mgmt_socket")
+	}
+	// The discovery loop reads its interval and provider settings once when it starts, so a
+	// change to any of them only takes effect on restart. Reporting them as hot would claim an
+	// effect that never happens.
+	if a.DiscoveryInterval != b.DiscoveryInterval {
+		blocked = append(blocked, "discovery_interval")
+	}
+	if a.HetznerAPIToken != b.HetznerAPIToken {
+		blocked = append(blocked, "hetzner_api_token")
+	}
+	if strings.TrimSpace(a.HetznerLabelSelector) != strings.TrimSpace(b.HetznerLabelSelector) {
+		blocked = append(blocked, "hetzner_label_selector")
+	}
+	if a.HetznerNetworkID != b.HetznerNetworkID {
+		blocked = append(blocked, "hetzner_network_id")
+	}
+	if strings.TrimSpace(a.HetznerAPIURL) != strings.TrimSpace(b.HetznerAPIURL) {
+		blocked = append(blocked, "hetzner_api_url")
 	}
 	if strings.TrimSpace(a.MgmtTCPBind) != strings.TrimSpace(b.MgmtTCPBind) {
 		blocked = append(blocked, "mgmt_tcp_bind")

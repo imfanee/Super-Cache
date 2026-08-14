@@ -162,6 +162,14 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 	reg.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: "supercache",
+			Name:      "discovered_peers",
+			Help:      "Addresses returned by the last peer discovery listing. Zero on a fleet that should have peers means discovery is answering but finding nothing.",
+		},
+		func() float64 { return float64(s.stats.DiscoveredPeers()) },
+	))
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "supercache",
 			Name:      "bootstrap_inbound_queue_depth",
 			Help:      "Depth of inbound replication queue during bootstrap (0 when idle).",
 		},

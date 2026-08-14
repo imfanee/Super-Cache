@@ -88,6 +88,46 @@ and will be replaced by a locally derived address at startup.
 Nothing needs to be added to `peers` for this to work, and the check costs one address
 comparison at startup.
 
+### Peer Discovery on Hetzner
+
+A node can find its peers from the Hetzner Cloud server inventory instead of a configured list.
+This is the only automatic option on Hetzner: private networks there are routed rather than
+switched, so a broadcast never reaches another node, and the API is the one inventory that
+updates itself when the autoscaler creates an instance.
+
+Enable it by making a **read-only** API token available, preferably through the environment so
+the token is not baked into an image that every node boots from:
+
+```bash
+# /etc/systemd/system/supercache.service.d/discovery.conf
+[Service]
+Environment=HCLOUD_TOKEN=<read-only token>
+```
+
+```toml
+hetzner_label_selector = "role=supercache"   # scope it, or every server in the project qualifies
+discovery_interval     = 60                  # seconds; negative disables re-listing
+```
+
+Label the instances to match, and give every node the same `peer_port`: the API reports
+addresses, not ports.
+
+Re-listing on an interval is what lets a node rejoin after every address it knew has been
+replaced. Its own dial loops keep retrying addresses that no longer exist, and a node that no
+longer exists will never connect back to correct it.
+
+Two behaviours worth knowing before enabling this:
+
+- A server with no private address is **skipped**, not reached over its public one, since
+  replication is plaintext unless peer TLS is configured and public traffic is billed. A node
+  that must join over the public network needs its address in `peers` explicitly.
+- With discovery enabled, a node that finds no peers **waits in `LOADING` rather than serving**
+  until a listing succeeds and reports nobody. An empty answer is the only evidence that the
+  node is genuinely alone rather than joining an established cluster.
+
+Watch `supercache_discovered_peers`. Zero on a fleet that should have peers means discovery is
+answering but finding nothing, usually a label selector that matches no instances.
+
 ## Health Monitoring
 
 ### Core Metrics

@@ -39,6 +39,30 @@ peers = ["89.167.15.232:7379"]
 # balancer, is therefore not supported here.
 # advertise_addr = ""
 
+# Peer discovery from the Hetzner Cloud server inventory. On Hetzner, private networks are
+# routed rather than switched, so a broadcast never reaches another node, and the API is the only
+# inventory that updates itself when the autoscaler creates an instance.
+#
+# Discovery is off unless a token is available. Prefer the HCLOUD_TOKEN environment variable over
+# this file, so the token is not baked into an image copied to every node. A READ-ONLY token is
+# enough: this only lists servers.
+# hetzner_api_token = ""
+#
+# Scope the listing to this cluster. Without it every server in the project is a peer candidate.
+# hetzner_label_selector = "role=supercache"
+#
+# On a server attached to several private networks, pick which one's address to use. 0 (default)
+# uses the first reported.
+# hetzner_network_id = 0
+#
+# How often, in seconds, to re-list. Re-listing is what lets a node rejoin after every address it
+# knew has been replaced: its own dial loops keep retrying addresses that no longer exist, and no
+# node that no longer exists will connect back to tell it otherwise. Negative disables it.
+# discovery_interval = 60
+#
+# Servers with no private address are skipped, not reached over their public one: replication is
+# plaintext unless peer TLS is configured, and public traffic is billed.
+
 # Add any peer that successfully authenticates to this node, so a node created by an autoscaler is
 # reachable without editing every existing node's configuration (default true). Peers are
 # authenticated by shared_secret either way, so this controls which authenticated nodes receive

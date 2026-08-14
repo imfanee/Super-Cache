@@ -62,6 +62,12 @@ type Server struct {
 	// the peers list, currently the advertise address of the node this configuration was
 	// copied from.
 	peerSeeds []string
+
+	// discoveryEnabled reports that a provider is configured, so an empty peer list at startup
+	// is not yet evidence that this node is alone.
+	discoveryEnabled atomic.Bool
+	// discoveryListed is set once a provider has answered, successfully, at least once.
+	discoveryListed atomic.Bool
 }
 
 // bootstrapSources returns every address this node could pull a snapshot from: the configured
@@ -69,6 +75,12 @@ type Server struct {
 // node. An empty result means this node knows of nowhere to sync from.
 func (s *Server) bootstrapSources(c *config.Config) []string {
 	out := config.BootstrapCandidates(c)
+	// Peers learned after startup, from discovery or from a node that connected here, are
+	// snapshot sources too. Without them a node whose configured addresses have all been
+	// replaced would keep retrying the dead ones and never sync.
+	if s.peer != nil {
+		out = append(out, s.peer.ConfigPeerAddrs()...)
+	}
 	seen := make(map[string]struct{}, len(out))
 	for _, a := range out {
 		seen[config.NormalizePeerAddr(a)] = struct{}{}
@@ -90,7 +102,7 @@ func (s *Server) bootstrapSources(c *config.Config) []string {
 // tell apart from here. Exiting would crash-loop an autoscaled node whose peers are briefly
 // unreachable, and serving would hand clients an empty dataset; staying up and refusing
 // commands with LOADING is the only option that cannot lose data or hide the problem.
-func (s *Server) bootstrapUntilSynced(ctx context.Context, candidates []string) {
+func (s *Server) bootstrapUntilSynced(ctx context.Context) {
 	depth := s.config().BootstrapQueueDepth
 	if depth < 1 {
 		depth = 1
@@ -103,6 +115,29 @@ func (s *Server) bootstrapUntilSynced(ctx context.Context, candidates []string) 
 	for attempt := 1; ; attempt++ {
 		if ctx.Err() != nil {
 			return
+		}
+		candidates := s.bootstrapSources(s.config())
+		if len(candidates) == 0 {
+			// Discovery is the only thing that could still name a source. Serving before it has
+			// answered would mean handing clients an empty store on a node that may well be
+			// joining an established cluster; an answer naming nobody is the only evidence that
+			// this node really is alone.
+			if s.discoveryListed.Load() {
+				s.stats.setBootstrapState("standalone")
+				s.clientReady.Store(true)
+				slog.Info("no peers exist; serving as a standalone node")
+				return
+			}
+			slog.Info("waiting for peer discovery before serving clients", "retry_in", backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
 		}
 		err := s.bootstrapOnce(ctx, candidates, depth)
 		if err == nil {
@@ -340,15 +375,22 @@ func (s *Server) Run(ctx context.Context) error {
 	// must never begin serving from an empty store: it would answer misses for every key the
 	// cluster holds, which reads as data loss to a client and is indistinguishable from a cache
 	// that has simply expired.
-	candidates := s.bootstrapSources(c)
-	if len(candidates) == 0 {
-		// Nowhere to sync from, so this node is the whole cluster as far as it can tell and its
-		// own store is authoritative.
+	// Discovery starts before bootstrap so a node whose configured addresses are all stale can
+	// still find a snapshot source rather than waiting out the retry loop with nowhere to sync
+	// from.
+	if providers := discoveryProviders(c); len(providers) > 0 {
+		s.discoveryEnabled.Store(true)
+		go s.runPeerDiscovery(ctx, providers)
+	}
+
+	if len(s.bootstrapSources(c)) == 0 && !s.discoveryEnabled.Load() {
+		// Nowhere to sync from and nowhere new to look, so this node is the whole cluster as far
+		// as it can tell and its own store is authoritative.
 		s.clientReady.Store(true)
 	} else {
 		s.clientReady.Store(false)
 		s.stats.setBootstrapState("syncing")
-		go s.bootstrapUntilSynced(ctx, candidates)
+		go s.bootstrapUntilSynced(ctx)
 	}
 	s.runPrometheusMetrics(ctx)
 

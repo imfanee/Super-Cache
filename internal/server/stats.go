@@ -50,6 +50,7 @@ type stats struct {
 
 	// Replication events a peer sent that never reached this node, detected by a skip in its
 	// sequence numbers, plus stragglers arriving behind a sequence already seen.
+	discoveredPeers  atomic.Int64
 	replGapEvents    atomic.Int64
 	replMissedEvents atomic.Int64
 	replLateEvents   atomic.Int64
@@ -103,6 +104,18 @@ func (s *stats) AddReplicationDropped(n int64) {
 // AddReplicationSendError implements peer.PeerMetrics.
 func (s *stats) AddReplicationSendError(n int64) {
 	s.replSendErrors.Add(n)
+}
+
+// setDiscoveredPeers records how many addresses the last discovery listing returned. A drop to
+// zero on a fleet that should have peers means discovery is answering but finding nothing,
+// which looks identical to a healthy standalone node unless it is measured.
+func (s *stats) setDiscoveredPeers(n int64) {
+	s.discoveredPeers.Store(n)
+}
+
+// DiscoveredPeers returns the size of the last discovery listing.
+func (s *stats) DiscoveredPeers() int64 {
+	return s.discoveredPeers.Load()
 }
 
 // AddReplicationGap implements peer.PeerMetrics.
