@@ -40,6 +40,8 @@ func (m *testPeerMetrics) SetReplicationStats(_ int, outboundAddrs []string) {
 }
 
 func (m *testPeerMetrics) SetBootstrapInboundQueueDepth(_ int) {}
+func (m *testPeerMetrics) AddReplicationDropped(_ int64)       {}
+func (m *testPeerMetrics) AddReplicationSendError(_ int64)     {}
 
 func freeTCPPort(t *testing.T) int {
 	t.Helper()

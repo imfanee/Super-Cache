@@ -41,6 +41,12 @@ type stats struct {
 	bootstrapKeys  atomic.Int64
 
 	bootstrapReplDepth atomic.Int64
+
+	// Replication events this node failed to hand to a peer. Both are silent data loss: the
+	// local write succeeded, the peer never saw it, and no receiver reads the sequence numbers
+	// that would otherwise reveal the gap.
+	replDropped    atomic.Int64
+	replSendErrors atomic.Int64
 }
 
 func newStats(nodeID string, clientPort int) *stats {
@@ -81,6 +87,26 @@ func (s *stats) SetReplicationStats(inboundConnected int, outboundConnectedAddrs
 // SetBootstrapInboundQueueDepth implements peer.PeerMetrics (P2.3).
 func (s *stats) SetBootstrapInboundQueueDepth(depth int) {
 	s.bootstrapReplDepth.Store(int64(depth))
+}
+
+// AddReplicationDropped implements peer.PeerMetrics.
+func (s *stats) AddReplicationDropped(n int64) {
+	s.replDropped.Add(n)
+}
+
+// AddReplicationSendError implements peer.PeerMetrics.
+func (s *stats) AddReplicationSendError(n int64) {
+	s.replSendErrors.Add(n)
+}
+
+// ReplicationDropped returns replication events discarded because a peer's queue was full.
+func (s *stats) ReplicationDropped() int64 {
+	return s.replDropped.Load()
+}
+
+// ReplicationSendErrors returns replication events whose socket write failed.
+func (s *stats) ReplicationSendErrors() int64 {
+	return s.replSendErrors.Load()
 }
 
 // BootstrapInboundQueueDepth returns the current inbound replication queue depth during bootstrap (0 when idle).

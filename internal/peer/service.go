@@ -33,6 +33,12 @@ import (
 type PeerMetrics interface {
 	SetReplicationStats(inboundConnected int, outboundConnectedAddrs []string)
 	SetBootstrapInboundQueueDepth(depth int)
+	// AddReplicationDropped counts replication events discarded because a peer's outbound queue
+	// was full. Each one is a write the peer will never see.
+	AddReplicationDropped(n int64)
+	// AddReplicationSendError counts replication events whose socket write failed. The link is
+	// torn down afterwards, but the event itself is gone.
+	AddReplicationSendError(n int64)
 }
 
 // BootstrapObserver receives bootstrap pull progress (optional; may be nil).
@@ -99,6 +105,46 @@ type inboundReplJob struct {
 	wr     wireRepl
 }
 
+// replFrame is one replication event queued for delivery, shared by every link it is queued on.
+//
+// Encoding is done once, lazily, by whichever writer reaches it first; the rest reuse the same
+// bytes. Both halves of that matter. Encoding once instead of once per peer keeps fan-out cost
+// flat as the cluster grows, and doing it in a writer rather than in Replicate keeps it off the
+// caller's path, which is a client's own write: encoding there would add the cost of a full
+// marshal to every write even on a node with a single peer.
+//
+// wire is retained because a graceful shutdown spills undelivered events as structured JSON,
+// which the encoded bytes cannot provide.
+type replFrame struct {
+	wire   wireRepl
+	nodeID string
+	ts     int64
+
+	once sync.Once
+	data []byte
+	err  error
+}
+
+// bytes returns the complete framed message, encoding it on first use.
+func (f *replFrame) bytes() ([]byte, error) {
+	f.once.Do(func() {
+		payload, err := json.Marshal(f.wire)
+		if err != nil {
+			f.err = fmt.Errorf("peer: marshal replication payload: %w", err)
+			return
+		}
+		f.data, f.err = EncodeMessage(PeerMessage{
+			Version:   1,
+			Type:      MsgTypeReplicate,
+			NodeID:    f.nodeID,
+			SeqNum:    f.wire.Seq,
+			Timestamp: f.ts,
+			Payload:   payload,
+		})
+	})
+	return f.data, f.err
+}
+
 // outPeer is one authenticated link this node may replicate over. Despite the name it covers
 // both directions: a dial this node opened, and (when the duplex capability was negotiated) a
 // connection this node accepted.
@@ -113,10 +159,12 @@ type outPeer struct {
 	// inbound is true when this node accepted the connection rather than dialing it.
 	inbound bool
 	// linkSeq is the registration order, used as a stable tie-break between equivalent links.
-	linkSeq          uint64
-	conn             net.Conn
-	w                *bufio.Writer
-	replCh           chan wireRepl
+	linkSeq uint64
+	conn    net.Conn
+	w       *bufio.Writer
+	replCh  chan *replFrame
+	// metrics records frames this link failed to deliver; nil when the service has none.
+	metrics          PeerMetrics
 	replStop         atomic.Bool
 	cancelSession    context.CancelFunc // outbound session (writer + heartbeat); nil if not set
 	writerDone       chan struct{}      // closed when outboundReplWriter exits
@@ -254,12 +302,26 @@ func (s *Service) replicationTargets() []*outPeer {
 
 // Replicate enqueues one JSON line per connected peer, one link per peer (non-blocking; drops
 // on full queue, P3.1, P3.3).
+// buildReplFrame prepares one replication event for delivery. The event is not encoded here:
+// see replFrame for why that is deferred to the first writer that sends it.
+func (s *Service) buildReplFrame(wr wireRepl) *replFrame {
+	return &replFrame{wire: wr, nodeID: s.nodeID, ts: time.Now().UnixNano()}
+}
+
 func (s *Service) Replicate(p ReplicatePayload) error {
 	wr := s.buildWireRepl(p)
-	for _, op := range s.replicationTargets() {
+	targets := s.replicationTargets()
+	if len(targets) == 0 {
+		return nil
+	}
+	frame := s.buildReplFrame(wr)
+	for _, op := range targets {
 		select {
-		case op.replCh <- wr:
+		case op.replCh <- frame:
 		default:
+			if op.metrics != nil {
+				op.metrics.AddReplicationDropped(1)
+			}
 			slog.Warn("replication outbound queue full; dropped event (re-bootstrap peers if state diverges)",
 				"peer", op.addr, "op", wr.Op, "seq", wr.Seq)
 		}
@@ -602,7 +664,8 @@ func (s *Service) startInboundReplLink(ctx context.Context, c net.Conn, id peerI
 		inbound:  true,
 		conn:     c,
 		w:        bufio.NewWriter(c),
-		replCh:   make(chan wireRepl, depth),
+		replCh:   make(chan *replFrame, depth),
+		metrics:  s.metrics,
 	}
 	sessCtx, cancel := context.WithCancel(ctx)
 	link.cancelSession = cancel

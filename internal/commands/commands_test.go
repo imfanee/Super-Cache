@@ -293,19 +293,21 @@ func mustParseOne(t *testing.T, wire string) resp.Value {
 
 type testInfoProvider struct{}
 
-func (testInfoProvider) TCPPort() int              { return 6379 }
-func (testInfoProvider) UptimeSeconds() int64      { return 120 }
-func (testInfoProvider) ConnectedClients() int64   { return 3 }
-func (testInfoProvider) TotalConnections() int64   { return 9 }
-func (testInfoProvider) TotalCommands() int64      { return 17 }
-func (testInfoProvider) OpsPerSec() int64          { return 4 }
-func (testInfoProvider) KeyspaceHits() int64       { return 7 }
-func (testInfoProvider) KeyspaceMisses() int64     { return 8 }
-func (testInfoProvider) ConnectedPeers() int       { return 1 }
-func (testInfoProvider) PeerAddresses() []string   { return []string{"127.0.0.1:7379"} }
-func (testInfoProvider) NodeID() string            { return "node-id" }
-func (testInfoProvider) BootstrapState() string    { return "idle" }
-func (testInfoProvider) ServerVersion() string     { return "dev" }
+func (testInfoProvider) TCPPort() int                 { return 6379 }
+func (testInfoProvider) UptimeSeconds() int64         { return 120 }
+func (testInfoProvider) ConnectedClients() int64      { return 3 }
+func (testInfoProvider) TotalConnections() int64      { return 9 }
+func (testInfoProvider) TotalCommands() int64         { return 17 }
+func (testInfoProvider) OpsPerSec() int64             { return 4 }
+func (testInfoProvider) KeyspaceHits() int64          { return 7 }
+func (testInfoProvider) KeyspaceMisses() int64        { return 8 }
+func (testInfoProvider) ConnectedPeers() int          { return 1 }
+func (testInfoProvider) PeerAddresses() []string      { return []string{"127.0.0.1:7379"} }
+func (testInfoProvider) NodeID() string               { return "node-id" }
+func (testInfoProvider) BootstrapState() string       { return "idle" }
+func (testInfoProvider) ReplicationDropped() int64    { return 0 }
+func (testInfoProvider) ReplicationSendErrors() int64 { return 0 }
+func (testInfoProvider) ServerVersion() string        { return "dev" }
 
 func TestCommandHarnessStringAndGenericFlow(t *testing.T) {
 	ctx, buf := newTestContext()

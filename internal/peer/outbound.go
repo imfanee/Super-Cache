@@ -58,7 +58,8 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 		remoteID: id.NodeID,
 		conn:     c,
 		w:        bufio.NewWriter(c),
-		replCh:   make(chan wireRepl, depth),
+		replCh:   make(chan *replFrame, depth),
+		metrics:  s.metrics,
 	}
 	sessCtx, cancel := context.WithCancel(ctx)
 	op.cancelSession = cancel
@@ -178,43 +179,43 @@ func outboundReplWriter(ctx context.Context, op *outPeer) {
 		select {
 		case <-ctx.Done():
 			goto drain
-		case wr, ok := <-op.replCh:
+		case f, ok := <-op.replCh:
 			if !ok {
 				return
 			}
-			flushOutboundReplLine(op, wr)
+			flushOutboundReplLine(op, f)
 		}
 	}
 drain:
 	for len(op.replCh) > 0 && time.Now().Before(drainDeadline) {
 		select {
-		case wr := <-op.replCh:
-			flushOutboundReplLine(op, wr)
+		case f := <-op.replCh:
+			flushOutboundReplLine(op, f)
 		default:
 			time.Sleep(time.Millisecond)
 		}
 	}
 }
 
-func flushOutboundReplLine(op *outPeer, wr wireRepl) {
-	op.mu.Lock()
-	p, err := json.Marshal(wr)
-	if err != nil {
-		op.mu.Unlock()
-		return
-	}
-	msg := PeerMessage{
-		Version:   1,
-		Type:      MsgTypeReplicate,
-		NodeID:    op.nodeID,
-		SeqNum:    wr.Seq,
-		Timestamp: time.Now().UnixNano(),
-		Payload:   p,
-	}
-	err = WriteMessage(op.w, msg)
+// flushOutboundReplLine writes one pre-encoded frame. The bytes were serialised once for all
+// peers, so this only copies them onto the socket.
+func flushOutboundReplLine(op *outPeer, f *replFrame) {
+	data, err := f.bytes()
 	if err == nil {
-		err = op.w.Flush()
+		op.mu.Lock()
+		_, err = op.w.Write(data)
+		if err == nil {
+			err = op.w.Flush()
+		}
+		op.mu.Unlock()
 	}
-	op.mu.Unlock()
-	_ = err // TCP write failure; session read loop or heartbeat will tear down.
+	if err != nil {
+		// The session read loop or heartbeat tears the link down, but this particular event is
+		// gone and nothing downstream would otherwise record that it never arrived.
+		if op.metrics != nil {
+			op.metrics.AddReplicationSendError(1)
+		}
+		slog.Warn("replication write failed; event not delivered",
+			"peer", op.addr, "op", f.wire.Op, "seq", f.wire.Seq, "err", err)
+	}
 }

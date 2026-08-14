@@ -595,11 +595,11 @@ func TestReplicationTargetsDeduplicatesByNodeID(t *testing.T) {
 	secret := strings.Repeat("R", 32)
 	svc, _ := newTestService(t, secret, "self", freeTCPPort(t), nil)
 
-	outbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan wireRepl, 4)}
-	inbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", inbound: true, replCh: make(chan wireRepl, 4)}
-	other := &outPeer{addr: "10.0.0.2:7379", remoteID: "peer-2", replCh: make(chan wireRepl, 4)}
-	legacyA := &outPeer{addr: "10.0.0.3:7379", replCh: make(chan wireRepl, 4)}
-	legacyB := &outPeer{addr: "10.0.0.4:7379", replCh: make(chan wireRepl, 4)}
+	outbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan *replFrame, 4)}
+	inbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", inbound: true, replCh: make(chan *replFrame, 4)}
+	other := &outPeer{addr: "10.0.0.2:7379", remoteID: "peer-2", replCh: make(chan *replFrame, 4)}
+	legacyA := &outPeer{addr: "10.0.0.3:7379", replCh: make(chan *replFrame, 4)}
+	legacyB := &outPeer{addr: "10.0.0.4:7379", replCh: make(chan *replFrame, 4)}
 
 	// Register the accepted link first so preference cannot be an artefact of ordering.
 	for _, l := range []*outPeer{inbound, outbound, other, legacyA, legacyB} {
@@ -638,8 +638,8 @@ func TestPreferredLinkFailsOverToAcceptedSocket(t *testing.T) {
 	secret := strings.Repeat("S", 32)
 	svc, _ := newTestService(t, secret, "self", freeTCPPort(t), nil)
 
-	outbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan wireRepl, 4)}
-	inbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", inbound: true, replCh: make(chan wireRepl, 4)}
+	outbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan *replFrame, 4)}
+	inbound := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", inbound: true, replCh: make(chan *replFrame, 4)}
 	svc.registerOut(outbound)
 	svc.registerOut(inbound)
 
@@ -663,9 +663,9 @@ func TestStoppedLinkIsNotATarget(t *testing.T) {
 	secret := strings.Repeat("T", 32)
 	svc, _ := newTestService(t, secret, "self", freeTCPPort(t), nil)
 
-	dead := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan wireRepl, 4)}
+	dead := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", replCh: make(chan *replFrame, 4)}
 	dead.replStop.Store(true)
-	alive := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", inbound: true, replCh: make(chan wireRepl, 4)}
+	alive := &outPeer{addr: "10.0.0.1:7379", remoteID: "peer-1", inbound: true, replCh: make(chan *replFrame, 4)}
 	svc.registerOut(dead)
 	svc.registerOut(alive)
 
@@ -684,8 +684,8 @@ func TestEndingDialKeepsAcceptedLink(t *testing.T) {
 	svc, _ := newTestService(t, secret, "self", freeTCPPort(t), nil)
 
 	const shared = "10.0.0.1:7379"
-	outbound := &outPeer{addr: shared, remoteID: "peer-1", replCh: make(chan wireRepl, 4)}
-	inbound := &outPeer{addr: shared, remoteID: "peer-1", inbound: true, replCh: make(chan wireRepl, 4)}
+	outbound := &outPeer{addr: shared, remoteID: "peer-1", replCh: make(chan *replFrame, 4)}
+	inbound := &outPeer{addr: shared, remoteID: "peer-1", inbound: true, replCh: make(chan *replFrame, 4)}
 	svc.registerOut(outbound)
 	svc.registerOut(inbound)
 

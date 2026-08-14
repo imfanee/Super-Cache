@@ -92,6 +92,24 @@ func WriteMessage(w io.Writer, msg PeerMessage) error {
 	return nil
 }
 
+// EncodeMessage returns one complete framed message: magic (4) + length (4) + JSON body.
+//
+// Replication frames are identical for every peer, so encoding once and writing the same bytes
+// to each link replaces one JSON marshal per peer with one per write.
+func EncodeMessage(msg PeerMessage) ([]byte, error) {
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("peer wire: marshal peer message: %w", err)
+	}
+	if len(body) > MaxPeerPayload {
+		return nil, fmt.Errorf("peer wire: marshal peer message: payload too large: %d", len(body))
+	}
+	out := make([]byte, 8, 8+len(body))
+	binary.BigEndian.PutUint32(out[0:4], PeerMagic)
+	binary.BigEndian.PutUint32(out[4:8], uint32(len(body)))
+	return append(out, body...), nil
+}
+
 // ReadMessage reads one framed PeerMessage after the 8-byte header.
 func ReadMessage(r io.Reader) (PeerMessage, error) {
 	var hdr [8]byte

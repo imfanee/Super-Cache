@@ -119,6 +119,22 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 		},
 		func() float64 { return float64(len(s.stats.PeerAddresses())) },
 	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_dropped_total",
+			Help:      "Replication events discarded because a peer's outbound queue was full. Any increase means this node and that peer have diverged.",
+		},
+		func() float64 { return float64(s.stats.ReplicationDropped()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_send_errors_total",
+			Help:      "Replication events whose socket write failed. Any increase means this node and that peer have diverged.",
+		},
+		func() float64 { return float64(s.stats.ReplicationSendErrors()) },
+	))
 	reg.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: "supercache",
