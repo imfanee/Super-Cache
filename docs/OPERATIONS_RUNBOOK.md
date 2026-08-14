@@ -62,6 +62,29 @@ WantedBy=multi-user.target
 4. `log_output` configured for file or stdout/journal.
 5. Peer addresses reachable.
 6. Client and peer ports allowed through firewall.
+7. On a dual-homed host, `peer_bind` and `advertise_addr` set to the private address.
+
+### Joining a Node Created From a Snapshot
+
+A node started from another node's image carries that node's configuration, including its
+`advertise_addr`. On startup each node checks whether the address its own file claims for it is
+actually held by one of its interfaces. When it is not, the file is treated as copied:
+
+- The address is dialled as a peer candidate. The machine the image was taken from was healthy
+  enough to be imaged, so it is a good place to find the cluster, and reaching any one live
+  member is enough to join the whole mesh.
+- This node advertises its own address instead of the copied one. Advertising an address it
+  does not hold would point every peer back at the original, leaving this node unable to
+  receive replication.
+- Any `node_id` in the same file is discarded and re-derived. Two nodes sharing an identity
+  each treat the other as themselves, and replication between them stops with no error.
+
+This means `advertise_addr` must name an address of the machine it is configured on. An address
+reachable only from elsewhere, such as one in front of NAT or a load balancer, is not supported
+and will be replaced by a locally derived address at startup.
+
+Nothing needs to be added to `peers` for this to work, and the check costs one address
+comparison at startup.
 
 ## Health Monitoring
 

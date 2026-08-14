@@ -58,6 +58,10 @@ type Server struct {
 	runDoneOnce sync.Once
 
 	clientReady atomic.Bool
+	// peerSeeds are dial candidates discovered from configuration at startup that are not in
+	// the peers list, currently the advertise address of the node this configuration was
+	// copied from.
+	peerSeeds []string
 }
 
 // New constructs a Server from validated configuration (store, registry, pub/sub, metrics).
@@ -69,7 +73,7 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	nodeID, advertise := resolveIdentity(cfg)
+	nodeID, advertise, seeds := resolveIdentity(cfg)
 	stats := newStats(nodeID, cfg.ClientPort)
 	ps := peer.NewService(cfg, st, stats, stats, nodeID)
 	ps.SetAdvertiseAddr(advertise)
@@ -79,6 +83,7 @@ func New(cfg *config.Config) (*Server, error) {
 		pubsub:      client.NewSubscriptionManager(),
 		peer:        ps,
 		stats:       stats,
+		peerSeeds:   seeds,
 		runFinished: make(chan struct{}),
 	}
 	s.cfg.Store(cfg)
@@ -204,6 +209,17 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	case <-time.After(10 * time.Second):
 		return fmt.Errorf("peer listen timeout")
+	}
+
+	// Dial candidates found in configuration but absent from the peers list. AddPeer validates
+	// the address, discards it if it is this node, and skips it if it is already configured, so
+	// a seed that turns out to be redundant costs nothing.
+	for _, seed := range s.peerSeeds {
+		if err := s.peer.AddPeer(seed); err != nil {
+			slog.Debug("configured self address not added as peer", "addr", seed, "err", err)
+			continue
+		}
+		slog.Info("dialing peer candidate taken from configured advertise_addr", "addr", seed)
 	}
 
 	candidates := config.BootstrapCandidates(c)

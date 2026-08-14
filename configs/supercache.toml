@@ -21,12 +21,22 @@ peers = ["89.167.15.232:7379"]
 
 # Optional stable cluster identity. Empty (default) derives it from this node's primary IP, so an
 # instance keeps the same identity across restarts with nothing per-node baked into the image.
+# Leave it empty in any image a node may be cloned from: a pinned identity travels with the file,
+# and two nodes sharing one identity stop replicating to each other without reporting an error.
 # node_id = ""
 
 # Optional host:port other nodes should dial to reach this node's peer listener. Empty (default)
 # derives it from the primary IP and peer_port, which is what an autoscaled node needs since its
-# address is not known until boot. Set explicitly when this node is reachable only at an address
-# it cannot observe locally, such as behind NAT or a load balancer.
+# address is not known until boot.
+#
+# It must name an address this machine actually holds. On a host with separate public and private
+# interfaces, set it to the private address, since the derived value follows the default route and
+# would otherwise advertise the public one and replicate over the internet.
+#
+# A value belonging to another machine is taken as evidence the file was copied from that node: it
+# is dialled as a peer candidate to find the cluster, and this node advertises its own address
+# instead. An address reachable only from elsewhere, such as one in front of NAT or a load
+# balancer, is therefore not supported here.
 # advertise_addr = ""
 
 # Add any peer that successfully authenticates to this node, so a node created by an autoscaler is

@@ -36,9 +36,12 @@ type Config struct {
 	NodeID string `toml:"node_id" yaml:"node_id"`
 	// AdvertiseAddr is the host:port other nodes should dial to reach this node's peer
 	// listener. Empty (the default) derives it from the primary IP and PeerPort, which is
-	// what an autoscaled node needs since its address is unknown until boot. Set it
-	// explicitly when the node is reachable at an address it cannot observe locally,
-	// for example behind NAT or a load balancer.
+	// what an autoscaled node needs since its address is unknown until boot.
+	//
+	// It must name an address this machine holds. A value belonging to another machine is
+	// taken as evidence that this configuration was copied from that node: it becomes a peer
+	// candidate and this node advertises its own address instead. An address reachable only
+	// from elsewhere, such as one behind NAT or a load balancer, is therefore not supported.
 	AdvertiseAddr string `toml:"advertise_addr" yaml:"advertise_addr"`
 	// BootstrapPeer is an optional host:port to pull a full snapshot from once at startup (empty skips).
 	BootstrapPeer string `toml:"bootstrap_peer" yaml:"bootstrap_peer"`

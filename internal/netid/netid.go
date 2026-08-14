@@ -7,6 +7,7 @@
 package netid
 
 import (
+	"context"
 	"crypto/md5" // #nosec G501 -- identity digest only, not a security primitive
 	"crypto/rand"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"time"
 )
 
 // bridgePrefixes are interface name prefixes for container/VM bridges and virtual links.
@@ -167,6 +169,97 @@ func PrimaryIP() (net.IP, error) {
 		}
 	}
 	return cands[0].ip, nil
+}
+
+// allLocalIPs enumerates every address held by this machine, including loopback and bridge
+// interfaces. This is deliberately broader than localCandidates: the question it answers is
+// "does this host own this address", not "is this a good address to advertise on". An address
+// on docker0 still belongs to this machine and must never be mistaken for a remote node.
+func allLocalIPs() []net.IP {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []net.IP
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			default:
+				continue
+			}
+			if ip != nil {
+				out = append(out, normalize(ip))
+			}
+		}
+	}
+	return out
+}
+
+// containsIP reports whether have holds want.
+func containsIP(have []net.IP, want net.IP) bool {
+	want = normalize(want)
+	for _, ip := range have {
+		if ip.Equal(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsLocalIP reports whether ip is held by any interface on this machine.
+//
+// A false result is what tells a node booted from another node's snapshot that the address its
+// configuration calls "me" actually belongs to a different machine, which is very likely a live
+// peer worth dialing.
+func IsLocalIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return containsIP(allLocalIPs(), ip)
+}
+
+// hostLookupTimeout bounds name resolution during identity resolution. This runs before the
+// node serves anything, so an unreachable resolver must not be able to stall startup: an
+// unanswered name is reported as unknown, which leaves the configured value untouched.
+const hostLookupTimeout = 3 * time.Second
+
+// IsLocalHost reports whether host — an IP literal or a resolvable name — refers to this
+// machine, and whether that could be determined at all.
+//
+// The second return value is false when host is a name that does not resolve, or does not
+// resolve promptly. Callers must treat that as "unknown" rather than "remote": guessing remote
+// would turn an unresolvable name into a bogus peer address and discard a pinned identity on
+// no evidence.
+func IsLocalHost(host string) (isLocal bool, known bool) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false, false
+	}
+	local := allLocalIPs()
+	if ip := net.ParseIP(host); ip != nil {
+		return containsIP(local, ip), true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hostLookupTimeout)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return false, false
+	}
+	for _, ip := range ips {
+		if containsIP(local, ip) {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // NodeIDFromIP returns the 32-hex-character MD5 digest of the canonical IP string.
