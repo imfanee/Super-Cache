@@ -719,30 +719,35 @@ func MergePeerLists(base, extra []string) []string {
 	return out
 }
 
-// BootstrapCandidates returns ordered bootstrap sources when bootstrap_peer is set: that address first,
-// then remaining peers as failover (P2.6). If bootstrap_peer is empty, no bootstrap is performed.
+// BootstrapCandidates returns ordered bootstrap sources: bootstrap_peer first when set, then the
+// configured peers as failover (P2.6).
+//
+// Peers are candidates even when bootstrap_peer is empty. A node that knows a peer but has no
+// snapshot source used to start with an empty store and answer misses for every key the cluster
+// holds, which is wrong for any node joining an existing cluster — and an autoscaled node never
+// has a bootstrap_peer, since its peers were not known when its image was built.
+//
+// An empty result means this node knows of nowhere to sync from and is therefore standalone.
 func BootstrapCandidates(c *Config) []string {
 	if c == nil {
 		return nil
 	}
-	primary := strings.TrimSpace(c.BootstrapPeer)
-	if primary == "" {
-		return nil
-	}
 	var out []string
 	seen := make(map[string]struct{})
-	out = append(out, primary)
-	seen[primary] = struct{}{}
+	add := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			return
+		}
+		if _, ok := seen[addr]; ok {
+			return
+		}
+		out = append(out, addr)
+		seen[addr] = struct{}{}
+	}
+	add(c.BootstrapPeer)
 	for _, p := range c.Peers {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		out = append(out, p)
-		seen[p] = struct{}{}
+		add(p)
 	}
 	return out
 }

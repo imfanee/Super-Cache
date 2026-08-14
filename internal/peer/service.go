@@ -461,6 +461,9 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 			}
 			continue
 		case MsgTypeBootstrapReq:
+			if s.refuseBootstrapWhileSyncing(remote) {
+				return
+			}
 			// The snapshot stream writes to this socket directly, so the replication writer
 			// must be fully stopped first or the two would interleave mid-frame.
 			s.stopInboundReplLink(link)
@@ -474,6 +477,9 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 				continue
 			}
 			if strings.EqualFold(wr.Op, wireOpBootstrap) {
+				if s.refuseBootstrapWhileSyncing(remote) {
+					return
+				}
 				s.stopInboundReplLink(link)
 				if err := s.serveBootstrapSnapshot(c); err != nil {
 					slog.Error("peer bootstrap snapshot", "err", err)
@@ -489,6 +495,25 @@ func (s *Service) serveInbound(ctx context.Context, c net.Conn) {
 			continue
 		}
 	}
+}
+
+// refuseBootstrapWhileSyncing reports whether a snapshot request must be declined because this
+// node has not finished its own bootstrap, and logs the refusal when it does.
+//
+// A node still syncing holds a partial store, so serving it as a snapshot would hand the
+// requester a subset of the cluster's data and leave it permanently short of whatever had not
+// arrived yet. This is reachable whenever several nodes that list each other start together.
+//
+// The refusal is a closed connection rather than a new frame, which the requester already
+// reports as a failed attempt and retries against the next candidate. Peers too old to know
+// about this behave identically, so nothing on the wire changes.
+func (s *Service) refuseBootstrapWhileSyncing(remote string) bool {
+	if !s.bootstrapActive.Load() {
+		return false
+	}
+	slog.Warn("refusing bootstrap request while this node is still syncing; "+
+		"the requester will try another source", "remote", remote)
+	return true
 }
 
 // writeHeartbeatAck replies to a peer heartbeat on an accepted connection, serialising with the
@@ -1064,6 +1089,18 @@ func (s *Service) DrainBootstrapInboundQueue(ctx context.Context) error {
 		time.Sleep(15 * time.Millisecond)
 	}
 	return nil
+}
+
+// LiveLinkCount reports how many peer links are currently registered, in either direction.
+//
+// A node must have at least one before it pulls a snapshot. Replication arriving during the
+// transfer is buffered and applied afterwards, but only frames that actually arrive: with no
+// link there is nothing to buffer, and every write the source makes between the snapshot being
+// taken and the link coming up is lost with nothing to detect it.
+func (s *Service) LiveLinkCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.out)
 }
 
 // ConfigPeerAddrs returns a copy of configured peer addresses (P2.5).

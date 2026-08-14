@@ -64,6 +64,120 @@ type Server struct {
 	peerSeeds []string
 }
 
+// bootstrapSources returns every address this node could pull a snapshot from: the configured
+// bootstrap_peer and peers, plus any seed discovered from a configuration copied off another
+// node. An empty result means this node knows of nowhere to sync from.
+func (s *Server) bootstrapSources(c *config.Config) []string {
+	out := config.BootstrapCandidates(c)
+	seen := make(map[string]struct{}, len(out))
+	for _, a := range out {
+		seen[config.NormalizePeerAddr(a)] = struct{}{}
+	}
+	for _, seed := range s.peerSeeds {
+		if _, ok := seen[config.NormalizePeerAddr(seed)]; ok {
+			continue
+		}
+		out = append(out, seed)
+		seen[config.NormalizePeerAddr(seed)] = struct{}{}
+	}
+	return out
+}
+
+// bootstrapUntilSynced pulls a snapshot, retrying until one source answers or the server stops.
+//
+// It does not give up. A node that cannot reach any source is far more likely to be starting
+// during a brief outage than to be the founder of a new cluster, and the two are impossible to
+// tell apart from here. Exiting would crash-loop an autoscaled node whose peers are briefly
+// unreachable, and serving would hand clients an empty dataset; staying up and refusing
+// commands with LOADING is the only option that cannot lose data or hide the problem.
+func (s *Server) bootstrapUntilSynced(ctx context.Context, candidates []string) {
+	depth := s.config().BootstrapQueueDepth
+	if depth < 1 {
+		depth = 1
+	}
+	const (
+		minBackoff = 500 * time.Millisecond
+		maxBackoff = 30 * time.Second
+	)
+	backoff := minBackoff
+	for attempt := 1; ; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		err := s.bootstrapOnce(ctx, candidates, depth)
+		if err == nil {
+			s.stats.setBootstrapState("ready")
+			s.clientReady.Store(true)
+			keysLoaded := s.store.DBSize()
+			slog.Info(fmt.Sprintf("Bootstrap complete. Serving clients. Keys loaded: %d.", keysLoaded),
+				"node_id", s.stats.NodeID(),
+				"db_size", keysLoaded,
+				"keys_applied", s.stats.BootstrapKeysApplied(),
+			)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Error("bootstrap failed; this node will not serve clients until it syncs",
+			"attempt", attempt, "sources", len(candidates), "retry_in", backoff, "err", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// bootstrapOnce runs a single bootstrap attempt across all sources.
+//
+// Inbound replication is buffered only for the duration of the attempt. Holding the buffer open
+// across the wait between attempts would let it overflow during a long outage, and a failed
+// attempt already empties the store, so the next attempt starts from a clean slate either way.
+func (s *Server) bootstrapOnce(ctx context.Context, candidates []string, depth int) error {
+	s.peer.SetBootstrapInboundActive(true, depth)
+	defer s.peer.SetBootstrapInboundActive(false, 0)
+	if err := s.awaitPeerLink(ctx); err != nil {
+		return err
+	}
+	if err := s.peer.PullSnapshotFailover(ctx, candidates); err != nil {
+		return err
+	}
+	return s.peer.DrainBootstrapInboundQueue(ctx)
+}
+
+// awaitPeerLink blocks until this node has at least one peer link, so that replication is
+// already being buffered before the snapshot is taken.
+//
+// Without this the snapshot can complete while no link exists, and every write the source makes
+// until the link comes up is missed: it is too late for the snapshot and too early for the
+// buffer. Nothing detects the loss, because no receiver reads the sequence numbers that would
+// reveal it. Buffering is already active when this is called, so the moment a link appears its
+// frames are queued rather than applied.
+func (s *Server) awaitPeerLink(ctx context.Context) error {
+	const (
+		wait = 15 * time.Second
+		tick = 50 * time.Millisecond
+	)
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	for {
+		if s.peer.LiveLinkCount() > 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("no peer link established within %s; cannot sync without one", wait)
+		case <-time.After(tick):
+		}
+	}
+}
+
 // New constructs a Server from validated configuration (store, registry, pub/sub, metrics).
 func New(cfg *config.Config) (*Server, error) {
 	if cfg == nil {
@@ -222,33 +336,20 @@ func (s *Server) Run(ctx context.Context) error {
 		slog.Info("dialing peer candidate taken from configured advertise_addr", "addr", seed)
 	}
 
-	candidates := config.BootstrapCandidates(c)
-	if len(candidates) > 0 {
+	// Every address this node knows of is a possible snapshot source. A node that knows a peer
+	// must never begin serving from an empty store: it would answer misses for every key the
+	// cluster holds, which reads as data loss to a client and is indistinguishable from a cache
+	// that has simply expired.
+	candidates := s.bootstrapSources(c)
+	if len(candidates) == 0 {
+		// Nowhere to sync from, so this node is the whole cluster as far as it can tell and its
+		// own store is authoritative.
+		s.clientReady.Store(true)
+	} else {
 		s.clientReady.Store(false)
 		s.stats.setBootstrapState("syncing")
-		depth := c.BootstrapQueueDepth
-		if depth < 1 {
-			depth = 1
-		}
-		s.peer.SetBootstrapInboundActive(true, depth)
-		if err := s.peer.PullSnapshotFailover(ctx, candidates); err != nil {
-			s.peer.SetBootstrapInboundActive(false, 0)
-			return fmt.Errorf("bootstrap: %w", err)
-		}
-		if err := s.peer.DrainBootstrapInboundQueue(ctx); err != nil {
-			s.peer.SetBootstrapInboundActive(false, 0)
-			return err
-		}
-		s.peer.SetBootstrapInboundActive(false, 0)
-		s.stats.setBootstrapState("ready")
-		keysLoaded := s.store.DBSize()
-		slog.Info(fmt.Sprintf("Bootstrap complete. Serving clients. Keys loaded: %d.", keysLoaded),
-			"node_id", s.stats.NodeID(),
-			"db_size", keysLoaded,
-			"keys_applied", s.stats.BootstrapKeysApplied(),
-		)
+		go s.bootstrapUntilSynced(ctx, candidates)
 	}
-	s.clientReady.Store(true)
 	s.runPrometheusMetrics(ctx)
 
 	addr := fmt.Sprintf("%s:%d", c.ClientBind, c.ClientPort)
