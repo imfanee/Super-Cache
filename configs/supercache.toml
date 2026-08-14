@@ -30,8 +30,8 @@ peers = ["89.167.15.232:7379"]
 # address is not known until boot.
 #
 # It must name an address this machine actually holds. On a host with separate public and private
-# interfaces, set it to the private address, since the derived value follows the default route and
-# would otherwise advertise the public one and replicate over the internet.
+# interfaces the derived value is the private address, so cluster traffic stays off the internet
+# without any per-node setting; set this only to override that choice.
 #
 # A value belonging to another machine is taken as evidence the file was copied from that node: it
 # is dialled as a peer candidate to find the cluster, and this node advertises its own address

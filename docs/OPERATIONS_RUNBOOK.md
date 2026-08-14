@@ -62,7 +62,9 @@ WantedBy=multi-user.target
 4. `log_output` configured for file or stdout/journal.
 5. Peer addresses reachable.
 6. Client and peer ports allowed through firewall.
-7. On a dual-homed host, `peer_bind` and `advertise_addr` set to the private address.
+7. On a dual-homed host, `peer_bind` set to the private address, and the peer port dropped on
+   the public interface. A node identifies and advertises itself by its private address
+   automatically, but `peer_bind` still defaults to `0.0.0.0` and so listens on both.
 
 ### Joining a Node Created From a Snapshot
 

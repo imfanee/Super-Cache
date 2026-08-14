@@ -151,24 +151,44 @@ func routeSourceIP() net.IP {
 	return nil
 }
 
-// PrimaryIP returns this node's stable address on the cluster network: the source address
-// of the default route when that address is also present on a real interface, otherwise the
-// best-classed enumerated address (private IPv4 first, public IPv4 as fallback).
+// PrimaryIP returns this node's stable address on the cluster network: the best-classed
+// enumerated address, which is a private IPv4 address whenever the host has one, with the
+// routing table breaking ties between addresses of that same class.
+//
+// Address class is decided before the routing table on purpose. A host with separate public and
+// private interfaces routes to the internet over the public one, so the source address of the
+// default route is its public address, while cluster traffic belongs on the private network.
+// Preferring the route source outright would give such a node a public identity and make it
+// advertise a public address, sending replication over the internet — in plaintext unless peer
+// TLS is configured, and at whatever the provider charges for egress.
+//
+// The routing table still decides between equally-classed addresses, which is where it is
+// genuinely informative: a host with several private interfaces is best identified by the one
+// its default route uses.
 func PrimaryIP() (net.IP, error) {
 	cands := localCandidates()
 	if len(cands) == 0 {
 		return nil, fmt.Errorf("netid: no usable non-loopback address found")
 	}
-	// The routing table is the most accurate signal for which of several addresses is the
-	// node's real identity, but only trust it when it agrees with a live interface.
-	if src := routeSourceIP(); src != nil {
+	return selectPrimary(cands, routeSourceIP()), nil
+}
+
+// selectPrimary picks the node's address from class-sorted candidates, letting src break ties
+// within the best class only. cands must be non-empty and ordered as localCandidates orders it.
+func selectPrimary(cands []candidate, src net.IP) net.IP {
+	// localCandidates sorts by class, so the first entry names the best class available.
+	best := cands[0].class
+	if src != nil {
 		for _, c := range cands {
+			if c.class != best {
+				break
+			}
 			if c.ip.Equal(src) {
-				return c.ip, nil
+				return c.ip
 			}
 		}
 	}
-	return cands[0].ip, nil
+	return cands[0].ip
 }
 
 // allLocalIPs enumerates every address held by this machine, including loopback and bridge
