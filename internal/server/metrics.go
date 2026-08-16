@@ -162,6 +162,14 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 	reg.MustRegister(prometheus.NewCounterFunc(
 		prometheus.CounterOpts{
 			Namespace: "supercache",
+			Name:      "bootstrap_dropped_total",
+			Help:      "Writes discarded because the buffer holding writes that arrive during a snapshot pull was full. The sending peer counts these as sent, so this is the only place they appear; a non-zero value means bootstrap_queue_depth is too small for the write rate.",
+		},
+		func() float64 { return float64(s.stats.BootstrapDropped()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
 			Name:      "replication_resyncs_total",
 			Help:      "Times this node refetched the dataset after confirming replication events were lost. Any increase means data was missed, not merely delayed.",
 		},

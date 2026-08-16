@@ -44,6 +44,7 @@ func (m *testPeerMetrics) AddReplicationDropped(_ int64)       {}
 func (m *testPeerMetrics) AddReplicationSendError(_ int64)     {}
 func (m *testPeerMetrics) AddReplicationGap(_ int64)           {}
 func (m *testPeerMetrics) AddReplicationLate(_ int64)          {}
+func (m *testPeerMetrics) AddBootstrapDropped(_ int64)         {}
 func (m *testPeerMetrics) AddReplicationLost(_ int64)          {}
 
 func freeTCPPort(t *testing.T) int {

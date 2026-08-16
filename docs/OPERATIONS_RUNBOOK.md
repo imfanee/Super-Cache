@@ -218,6 +218,24 @@ write rate.
 
 Set `resync_on_gap = false` to keep the detection and counters without the refetch.
 
+### Writes discarded during a snapshot pull
+
+`supercache_bootstrap_dropped_total` counts writes that arrived while this node was pulling a
+snapshot and could not be buffered because `bootstrap_queue_depth` was already full. It is the
+only place they appear: the sending peer queued and wrote them successfully, so its own counters
+stay clean.
+
+A bootstrap attempt that discards anything is **failed rather than completed**, because the
+dataset it produced is missing writes the source already has — the attempt retries from a clean
+slate with backoff. A node in this state reports `LOADING` and does not serve, which is the
+intended outcome: the alternative is serving a store already known to be short of data.
+
+Sustained increase means the write rate is outrunning the buffer for the whole duration of the
+snapshot transfer. Raise `bootstrap_queue_depth` — size it to peak write rate multiplied by
+expected bootstrap duration, plus margin. A node joining a busy cluster with a queue far too
+small will keep retrying until either the setting is raised or the write rate falls; the log
+line names the count and the setting on every attempt.
+
 ## Health Monitoring
 
 ### Core Metrics

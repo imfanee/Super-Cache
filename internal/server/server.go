@@ -229,7 +229,17 @@ func (s *Server) bootstrapOnce(ctx context.Context, candidates []string, depth i
 	if err := s.peer.PullSnapshotFailover(ctx, candidates); err != nil {
 		return err
 	}
-	return s.peer.DrainBootstrapInboundQueue(ctx)
+	if err := s.peer.DrainBootstrapInboundQueue(ctx); err != nil {
+		return err
+	}
+	// Writes that arrived during the pull and could not be buffered are missing from the result:
+	// too late for the snapshot, and discarded instead of queued. Completing here would serve a
+	// store already known to be short of data, which is the thing bootstrap refuses to do
+	// everywhere else. Fail the attempt instead, so it retries from a clean slate.
+	if n := s.peer.BootstrapDropped(); n > 0 {
+		return fmt.Errorf("%d write(s) discarded while bootstrapping; raise bootstrap_queue_depth (currently %d) or retry when the write rate drops", n, depth)
+	}
+	return nil
 }
 
 // awaitPeerLink blocks until this node has at least one peer link, so that replication is

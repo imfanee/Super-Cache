@@ -47,6 +47,10 @@ type PeerMetrics interface {
 	AddReplicationLost(n int64)
 	// AddReplicationLate counts events arriving with a sequence at or below one already seen.
 	AddReplicationLate(n int64)
+	// AddBootstrapDropped counts replication events discarded because the buffer holding writes
+	// that arrive during a snapshot pull was full. Unlike an outbound drop, the sender recorded
+	// this event as sent, so nothing on its side reports it.
+	AddBootstrapDropped(n int64)
 }
 
 // BootstrapObserver receives bootstrap pull progress (optional; may be nil).
@@ -102,6 +106,7 @@ type Service struct {
 	bootstrapReplBuf []wireRepl
 	bootstrapMaxCap  int
 	bootstrapActive  atomic.Bool
+	bootstrapDropped atomic.Int64
 
 	inboundLastHB sync.Map // remote TCP address -> last heartbeat unix ms (inbound path)
 
@@ -914,7 +919,7 @@ func (s *Service) inboundWorkerLoop(ctx context.Context, in <-chan inboundReplJo
 			}
 			if job.s.bootstrapActive.Load() {
 				if err := job.s.enqueueBootstrapRepl(job.wr); err != nil {
-					slog.Warn("bootstrap replication queue full", "remote", job.remote)
+					job.s.noteBootstrapDrop(job.remote)
 				}
 				continue
 			}
@@ -1291,6 +1296,27 @@ func (s *Service) refreshMetrics() {
 	s.metrics.SetReplicationStats(ib, addrs)
 }
 
+// noteBootstrapDrop records a write that arrived during a snapshot pull and could not be buffered.
+//
+// It is counted separately from an outbound drop because nothing else reports it: the sender
+// queued and wrote the event successfully, so its own counters stay clean, and the receiver is
+// left short of data with only a log line to say so.
+func (s *Service) noteBootstrapDrop(remote string) {
+	n := s.bootstrapDropped.Add(1)
+	if s.metrics != nil {
+		s.metrics.AddBootstrapDropped(1)
+	}
+	// One line per overflow would be one line per lost write under the burst that caused it.
+	if n == 1 {
+		slog.Error("a write arriving during bootstrap could not be buffered and was discarded; this snapshot will be incomplete",
+			"remote", remote, "hint", "raise bootstrap_queue_depth")
+	}
+}
+
+// BootstrapDropped reports how many writes were discarded during the current snapshot pull. A
+// non-zero count means the dataset this attempt produced is missing writes the source already has.
+func (s *Service) BootstrapDropped() int64 { return s.bootstrapDropped.Load() }
+
 // SetBootstrapInboundActive enables inbound replication buffering during snapshot pull (P2.3).
 func (s *Service) SetBootstrapInboundActive(active bool, maxCap int) {
 	if !active {
@@ -1306,6 +1332,9 @@ func (s *Service) SetBootstrapInboundActive(active bool, maxCap int) {
 		}
 		s.bootstrapMaxCap = maxCap
 		s.bootstrapReplMu.Unlock()
+		// Each attempt is judged on its own: a failed one empties the store and starts again, so
+		// drops recorded by a previous attempt say nothing about this one.
+		s.bootstrapDropped.Store(0)
 		s.bootstrapActive.Store(true)
 	}
 	if s.metrics != nil {

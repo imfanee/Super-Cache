@@ -8,6 +8,10 @@ Copyright (c) 2024-2026 Faisal Hanif. All rights reserved. Licensed under the Su
 
 - Documentation refinements and operational runbook updates.
 
+### Fixed
+
+- A write that arrived while a node was pulling a snapshot and could not be buffered was discarded silently: the receiver logged a warning and counted nothing, while the sending peer recorded it as sent, so no counter anywhere reflected the loss. The node then completed its bootstrap and began serving a dataset already known to be missing writes, leaving it to per-origin gap detection to notice — and if that origin went quiet afterwards, nothing ever did. Such writes are now counted in `supercache_bootstrap_dropped_total`, and a bootstrap attempt that discarded any is failed rather than completed, so it retries from a clean slate instead of serving an incomplete store. Found by a 14-minute two-node soak.
+
 ### Added
 
 - `cluster_id`: names a cluster so a shared secret alone cannot merge two of them. Folded into the authentication proof and never sent on the wire, so the handshake cannot be used to ask a node which cluster it belongs to. Takes effect only between nodes that both set one, so a fleet can adopt it one node at a time.

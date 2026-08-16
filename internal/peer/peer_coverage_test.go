@@ -239,6 +239,7 @@ func (c *captureBootstrapMetrics) AddReplicationDropped(n int64)   { c.dropped.A
 func (c *captureBootstrapMetrics) AddReplicationSendError(n int64) { c.sendErrors.Add(n) }
 func (c *captureBootstrapMetrics) AddReplicationGap(int64)         {}
 func (c *captureBootstrapMetrics) AddReplicationLate(int64)        {}
+func (c *captureBootstrapMetrics) AddBootstrapDropped(int64)       {}
 func (c *captureBootstrapMetrics) AddReplicationLost(int64)        {}
 
 func TestBootstrapInboundBufferDrain(t *testing.T) {

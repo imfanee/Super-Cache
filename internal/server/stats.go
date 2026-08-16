@@ -55,6 +55,7 @@ type stats struct {
 	replGapEvents    atomic.Int64
 	replMissedEvents atomic.Int64
 	replLateEvents   atomic.Int64
+	bootstrapDropped atomic.Int64
 }
 
 func newStats(nodeID string, clientPort int) *stats {
@@ -145,6 +146,18 @@ func (s *stats) AddReplicationLost(n int64) {
 // AddReplicationLate implements peer.PeerMetrics.
 func (s *stats) AddReplicationLate(n int64) {
 	s.replLateEvents.Add(n)
+}
+
+// AddBootstrapDropped implements peer.PeerMetrics.
+func (s *stats) AddBootstrapDropped(n int64) {
+	s.bootstrapDropped.Add(n)
+}
+
+// BootstrapDropped returns how many writes were discarded because the buffer holding writes that
+// arrive during a snapshot pull was full. The sending peer counts these as sent, so this is the
+// only place they appear.
+func (s *stats) BootstrapDropped() int64 {
+	return s.bootstrapDropped.Load()
 }
 
 // ReplicationGapEvents returns how many times a peer's sequence numbers skipped forward.
