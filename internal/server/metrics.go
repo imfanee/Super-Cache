@@ -139,7 +139,7 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 		prometheus.CounterOpts{
 			Namespace: "supercache",
 			Name:      "replication_missed_events_total",
-			Help:      "Replication events a peer sent that never arrived, counted from gaps in its sequence numbers. Any increase means this node is missing data the cluster has.",
+			Help:      "Replication events confirmed never to have arrived, after waiting for them. Any increase means this node is genuinely missing data the cluster has.",
 		},
 		func() float64 { return float64(s.stats.ReplicationMissedEvents()) },
 	))
@@ -147,7 +147,7 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 		prometheus.CounterOpts{
 			Namespace: "supercache",
 			Name:      "replication_gap_events_total",
-			Help:      "Number of times a peer's replication sequence skipped forward, regardless of how many events each skip covered.",
+			Help:      "Times a peer's sequence skipped forward. Expected under concurrent writes and usually resolves on its own; only replication_missed_events_total means data was lost.",
 		},
 		func() float64 { return float64(s.stats.ReplicationGapEvents()) },
 	))

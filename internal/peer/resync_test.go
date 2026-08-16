@@ -155,3 +155,75 @@ func TestResetReplicationTrackingClearsPositions(t *testing.T) {
 		t.Fatalf("expected no loss reported after a reset, got %d", got)
 	}
 }
+
+// TestObservedGapIsNotCountedAsLoss is the metric-semantics fix. A gap seen on arrival is not
+// evidence of loss: concurrent writers allocate sequence numbers atomically but enqueue them
+// independently, so a burst of parallel writes routinely arrives slightly out of order with
+// nothing missing. Counting that as lost data made the metric fire constantly on a healthy
+// cluster, which is worse than not having it.
+func TestObservedGapIsNotCountedAsLoss(t *testing.T) {
+	m := &countingMetrics{}
+	svc := newFrameTestService(t, m)
+
+	arrive(svc, "peer-a", 1)
+	arrive(svc, "peer-a", 4) // 2 and 3 skipped
+	if got := m.lost.Load(); got != 0 {
+		t.Fatalf("an observed gap must not count as loss yet, got %d", got)
+	}
+	if got := m.gapMissed.Load(); got == 0 {
+		t.Fatal("the gap itself should still be recorded for diagnostics")
+	}
+
+	// They turn up moments later, as reordering does.
+	arrive(svc, "peer-a", 2)
+	arrive(svc, "peer-a", 3)
+	if got := svc.gaps.expired(time.Now().Add(time.Hour)); len(got) != 0 {
+		t.Fatalf("stragglers should have cleared the gap, got %v", got)
+	}
+	if got := m.lost.Load(); got != 0 {
+		t.Fatalf("nothing was lost, got %d", got)
+	}
+}
+
+// TestConfirmedLossIsCounted is the other half: what genuinely never arrives is counted, and is
+// what an operator should alert on.
+func TestConfirmedLossIsCounted(t *testing.T) {
+	m := &countingMetrics{}
+	svc := newFrameTestService(t, m)
+	svc.SetResyncRequester(newRecordingResync())
+
+	arrive(svc, "peer-a", 1)
+	arrive(svc, "peer-a", 5) // 2,3,4 never arrive
+
+	// Age them past the grace period, then run one sweep as the watcher would.
+	svc.gaps.mu.Lock()
+	for _, mm := range svc.gaps.missing {
+		for seq := range mm {
+			mm[seq] = time.Now().Add(-time.Minute).UnixMilli()
+		}
+	}
+	svc.gaps.mu.Unlock()
+
+	lost := svc.gaps.expired(time.Now())
+	total := 0
+	for _, n := range lost {
+		total += n
+	}
+	if total != 3 {
+		t.Fatalf("expected 3 events confirmed lost, got %d", total)
+	}
+	svc.metrics.AddReplicationLost(int64(total))
+	if got := m.lost.Load(); got != 3 {
+		t.Fatalf("confirmed loss must be counted, got %d", got)
+	}
+}
+
+// TestLargeJumpCountsAsLossImmediately covers the shortcut for a jump too big to be reordering.
+func TestLargeJumpCountsAsLossImmediately(t *testing.T) {
+	m := &countingMetrics{}
+	svc := newFrameTestService(t, m)
+	svc.confirmLoss("peer-a", 5000)
+	if got := m.lost.Load(); got != 5000 {
+		t.Fatalf("expected 5000 counted as lost, got %d", got)
+	}
+}

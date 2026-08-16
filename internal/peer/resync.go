@@ -160,6 +160,9 @@ func (s *Service) watchGaps(ctx context.Context) {
 				slog.Error("replication events from a peer never arrived; this node is missing data it holds",
 					"origin", origin, "events", n, "waited", gapGrace)
 			}
+			if m := s.metrics; m != nil && total > 0 {
+				m.AddReplicationLost(int64(total))
+			}
 			if r := s.resyncRequester(); r != nil {
 				r.RequestResync("confirmed replication loss")
 			}
@@ -172,6 +175,9 @@ func (s *Service) watchGaps(ctx context.Context) {
 func (s *Service) confirmLoss(origin string, missed uint64) {
 	slog.Error("replication sequence jumped too far to be reordering; treating it as loss",
 		"origin", origin, "missed", missed)
+	if m := s.metrics; m != nil {
+		m.AddReplicationLost(int64(missed))
+	}
 	if r := s.resyncRequester(); r != nil {
 		r.RequestResync("large replication gap")
 	}

@@ -39,9 +39,12 @@ type PeerMetrics interface {
 	// AddReplicationSendError counts replication events whose socket write failed. The link is
 	// torn down afterwards, but the event itself is gone.
 	AddReplicationSendError(n int64)
-	// AddReplicationGap reports that a peer's sequence numbers skipped forward, meaning missed
-	// events never arrived. missed is how many.
+	// AddReplicationGap reports that a peer's sequence numbers skipped forward. This is not yet
+	// loss: the missing events are given time to arrive, and usually do.
 	AddReplicationGap(missed int64)
+	// AddReplicationLost reports events confirmed never to have arrived, after the grace period
+	// expired without them. This is the number that means data is actually missing.
+	AddReplicationLost(n int64)
 	// AddReplicationLate counts events arriving with a sequence at or below one already seen.
 	AddReplicationLate(n int64)
 }
@@ -705,7 +708,11 @@ func (s *Service) noteReplArrival(wr wireRepl) {
 		if s.metrics != nil {
 			s.metrics.AddReplicationGap(int64(missed))
 		}
-		slog.Warn("replication gap; waiting to see whether the missing events arrive late",
+		// Counted as an observed gap only. Whether anything was really lost is decided once the
+		// missing sequences have had time to turn up: concurrent writers allocate sequence
+		// numbers atomically but enqueue them independently, so a burst of parallel writes
+		// routinely arrives slightly out of order with nothing missing at all.
+		slog.Debug("replication gap; waiting to see whether the missing events arrive late",
 			"origin", origin, "missed", missed, "expected_seq", prev+1, "got_seq", wr.Seq)
 		if s.gaps != nil && s.gaps.note(origin, prev, wr.Seq) {
 			s.confirmLoss(origin, missed)

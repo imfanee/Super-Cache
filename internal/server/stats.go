@@ -130,10 +130,16 @@ func (s *stats) DiscoveredPeers() int64 {
 	return s.discoveredPeers.Load()
 }
 
-// AddReplicationGap implements peer.PeerMetrics.
+// AddReplicationGap implements peer.PeerMetrics. It records that a gap was observed, which is
+// not the same as data being lost: the missing events are usually just moments behind.
 func (s *stats) AddReplicationGap(missed int64) {
 	s.replGapEvents.Add(1)
-	s.replMissedEvents.Add(missed)
+}
+
+// AddReplicationLost implements peer.PeerMetrics. This counts events confirmed never to have
+// arrived, which is the number worth alerting on.
+func (s *stats) AddReplicationLost(n int64) {
+	s.replMissedEvents.Add(n)
 }
 
 // AddReplicationLate implements peer.PeerMetrics.
