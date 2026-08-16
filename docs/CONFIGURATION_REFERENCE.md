@@ -69,6 +69,24 @@ Range `1..65535`, must not equal peer/mgmt/metrics active ports.
 client_port = 6379
 ```
 
+### client_idle_timeout
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_idle_timeout` |
+| Type | int (seconds) |
+| Default | `3600` |
+| Hot-Reload | Yes |
+| Required | No |
+
+Closes client connections that have been idle for this long. `0` uses the default; negative disables the timeout.
+
+It exists so dead connections cannot pin a handler goroutine and a file descriptor forever — the usual cause is a socket left open by a client's forked children, which the client itself will never close. Connections in subscribe mode or inside a `MULTI` block are exempt, since those are legitimately idle while waiting.
+
+```toml
+client_idle_timeout = 3600
+```
+
 ### peer_bind
 
 | Item | Value |
@@ -212,6 +230,22 @@ File output requires writable parent directory.
 
 ```toml
 log_output = "/var/log/supercache.log"
+```
+
+### log_format
+
+| Item | Value |
+|---|---|
+| TOML Key | `log_format` |
+| Type | string |
+| Default | `text` |
+| Hot-Reload | Yes |
+| Required | No |
+
+Selects the log output format: `text`, `json`, or `logfmt`. Any other value is rejected at startup. `logfmt` emits `key=value` lines like `text`; `json` is the one to use where logs are shipped to a structured store.
+
+```toml
+log_format = "json"
 ```
 
 ### bootstrap_queue_depth
@@ -375,7 +409,7 @@ cluster_id = "prod-eu"
 | TOML Key | `auto_discover_peers` |
 | Type | bool |
 | Default | `true` |
-| Hot-Reload | No |
+| Hot-Reload | Yes |
 | Required | No |
 
 Makes a node add any peer that successfully authenticates to it, so a node created by an autoscaler is reachable without editing every existing node's config. Set to `false` to keep membership strictly to the configured list.
@@ -478,7 +512,7 @@ hetzner_api_url = "http://proxy.internal:8080/v1"
 | TOML Key | `announce_leave` |
 | Type | bool |
 | Default | `true` |
-| Hot-Reload | No |
+| Hot-Reload | Yes |
 | Required | No |
 
 Makes a node tell its peers it is shutting down, so they drop its address immediately instead of waiting out `peer_forget_after`.
@@ -514,7 +548,7 @@ peer_forget_after = 3600
 | TOML Key | `resync_on_gap` |
 | Type | bool |
 | Default | `true` |
-| Hot-Reload | No |
+| Hot-Reload | Yes |
 | Required | No |
 
 Makes a node refetch the dataset when replication events from a peer are confirmed lost.
@@ -532,7 +566,7 @@ resync_on_gap = true
 | TOML Key | `resync_min_interval` |
 | Type | int (seconds) |
 | Default | `300` |
-| Hot-Reload | No |
+| Hot-Reload | Yes |
 | Required | No |
 
 The shortest time between two resyncs. `0` uses the default. It bounds the cost of a fault that keeps producing loss: without it, such a node would refetch continuously and never serve. A resync refused by this limit is remembered and carried out once the interval passes, rather than dropped.
@@ -557,6 +591,226 @@ Optional JSON path used to persist the merged peer list across restarts, so a no
 peer_state_file = "/var/lib/supercache/peers.json"
 ```
 
+### gossip_peers
+
+| Item | Value |
+|---|---|
+| TOML Key | `gossip_peers` |
+| Type | bool |
+| Default | `false` |
+| Hot-Reload | No |
+| Required | No |
+
+Sends a peer announcement after the mesh handshake, so nodes learn each other's addresses from a node they are already connected to.
+
+This is a separate mechanism from `auto_discover_peers`, which adds a peer that dials in. Addresses learned by either route are subject to `peer_forget_after`.
+
+```toml
+gossip_peers = false
+```
+
+### repl_shutdown_spill_path
+
+| Item | Value |
+|---|---|
+| TOML Key | `repl_shutdown_spill_path` |
+| Type | string |
+| Default | `supercache-repl-spill.json` beside the config file |
+| Hot-Reload | No |
+| Required | No |
+
+Where to write outbound replication messages that were still queued when the process exited and could not be flushed in time. `-` disables writing. With no config file path to derive from, the system temporary directory is used.
+
+This is a diagnostic record of what a peer never received, **not a data file**: it is never read back at startup, and it holds pending messages rather than the dataset. Super-Cache keeps no on-disk copy of its data, so a whole-cluster restart starts empty by design.
+
+```toml
+repl_shutdown_spill_path = "/var/lib/supercache/repl-spill.json"
+```
+
+### metrics_port
+
+| Item | Value |
+|---|---|
+| TOML Key | `metrics_port` |
+| Type | int |
+| Default | `0` (disabled) |
+| Hot-Reload | No |
+| Required | No |
+
+TCP port for the Prometheus scrape endpoint at `/metrics`. `0` disables it. Must not collide with the client, peer or management ports.
+
+The replication counters worth alerting on are exposed here — in particular `supercache_replication_missed_events_total` (confirmed data loss) and `supercache_replication_resyncs_total`. Note that `supercache_replication_gap_events_total` is diagnostic and rises harmlessly under concurrent writes; it is not a loss signal.
+
+```toml
+metrics_port = 9090
+```
+
+### metrics_bind
+
+| Item | Value |
+|---|---|
+| TOML Key | `metrics_bind` |
+| Type | string |
+| Default | none (`0.0.0.0` when `metrics_port` is set) |
+| Hot-Reload | No |
+| Required | No |
+
+Listen address for the metrics endpoint. Because it defaults to all interfaces, set it to an internal address if the scrape endpoint should not be publicly reachable — it is not authenticated.
+
+```toml
+metrics_bind = "10.0.0.11"
+```
+
+### mgmt_tcp_port
+
+| Item | Value |
+|---|---|
+| TOML Key | `mgmt_tcp_port` |
+| Type | int |
+| Default | `0` (disabled, Unix socket only) |
+| Hot-Reload | No |
+| Required | No |
+
+TCP port for the management API. `0` leaves management available only over `mgmt_socket`.
+
+```toml
+mgmt_tcp_port = 7000
+```
+
+### mgmt_tcp_bind
+
+| Item | Value |
+|---|---|
+| TOML Key | `mgmt_tcp_bind` |
+| Type | string |
+| Default | `127.0.0.1` when `mgmt_tcp_port` is set |
+| Hot-Reload | No |
+| Required | No |
+
+Listen address for the TCP management API. **It must be a loopback address** (`127.0.0.1`, `::1` or `localhost`); anything else is rejected at startup, because the management API changes cluster membership and is not authenticated. Reach it from another host over SSH or a tunnel rather than by binding it outward.
+
+Setting this without `mgmt_tcp_port` is an error rather than a silent no-op.
+
+```toml
+mgmt_tcp_bind = "127.0.0.1"
+```
+
+### client_tls_cert_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_tls_cert_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM certificate for TLS on the client port. TLS is enabled only when this and `client_tls_key_file` are both set; setting one without the other is an error rather than a silent fallback to plaintext.
+
+```toml
+client_tls_cert_file = "/etc/supercache/client.crt"
+```
+
+### client_tls_key_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_tls_key_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM private key matching `client_tls_cert_file`. Both must be set together, and both must be readable at startup.
+
+```toml
+client_tls_key_file = "/etc/supercache/client.key"
+```
+
+### client_tls_min_version
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_tls_min_version` |
+| Type | string |
+| Default | `1.2` |
+| Hot-Reload | No |
+| Required | No |
+
+Minimum TLS version accepted on the client port. Only `1.2` and `1.3` are valid; any other value is rejected at startup.
+
+```toml
+client_tls_min_version = "1.3"
+```
+
+### peer_tls_cert_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_cert_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM certificate for TLS on the peer mesh listener. Peer TLS is enabled only when this and `peer_tls_key_file` are both set.
+
+Peer TLS protects replication in transit; it does not replace `shared_secret`, which still authenticates the peer, nor `cluster_id`, which still separates clusters.
+
+```toml
+peer_tls_cert_file = "/etc/supercache/peer.crt"
+```
+
+### peer_tls_key_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_key_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM private key matching `peer_tls_cert_file`. Both must be set together.
+
+```toml
+peer_tls_key_file = "/etc/supercache/peer.key"
+```
+
+### peer_tls_ca_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_ca_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM CA bundle used to verify peer certificates on outbound dials and on bootstrap. **Required when peer TLS is enabled** — without it an outbound dial has nothing to verify against. Setting it while peer TLS is not configured is also an error, so a half-finished TLS setup fails loudly instead of quietly staying plaintext.
+
+```toml
+peer_tls_ca_file = "/etc/supercache/peer-ca.crt"
+```
+
+### peer_tls_min_version
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_min_version` |
+| Type | string |
+| Default | `1.2` |
+| Hot-Reload | No |
+| Required | No |
+
+Minimum TLS version accepted on the peer listener. Only `1.2` and `1.3` are valid.
+
+Raising this to `1.3` must be done across the fleet before it is enforced anywhere: a node that requires 1.3 cannot replicate with one that offers only 1.2, so a partial rollout partitions the cluster.
+
+```toml
+peer_tls_min_version = "1.2"
+```
+
 ## Hot-Reload Reference
 
 Reload command:
@@ -577,6 +831,13 @@ Hot-reloadable fields:
 - `heartbeat_interval`
 - `heartbeat_timeout`
 - `peer_queue_depth`
+- `client_idle_timeout`
+- `auto_discover_peers`
+- `announce_leave`
+- `resync_on_gap`
+- `resync_min_interval`
+
+Every other key requires a restart. A reload that changes one is reported as blocked rather than applied silently, so the running configuration never diverges from the file without saying so.
 
 ## Validation Rules
 
@@ -589,8 +850,9 @@ Hot-reloadable fields:
 - heartbeat timeout > interval
 - peer address parseability
 - writable `log_output` parent for file mode
-- loopback-only mgmt TCP bind
-- TLS file consistency and readability
+- loopback-only mgmt TCP bind, and `mgmt_tcp_bind` set without `mgmt_tcp_port` is rejected
+- TLS file consistency and readability: client and peer cert/key must each be set together, `peer_tls_ca_file` is required when peer TLS is enabled and rejected when it is not
+- TLS minimum version is `1.2` or `1.3` only
 - `cluster_id` at most 128 characters, printable non-space ASCII
 
 ## Example Configurations

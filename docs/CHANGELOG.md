@@ -34,6 +34,7 @@ Copyright (c) 2024-2026 Faisal Hanif. All rights reserved. Licensed under the Su
 - Graceful shutdown now runs to completion. The signal handler ran shutdown while the main goroutine waited on the server, and closing the client listener let the process exit mid-flight, so replication drain and the spill file were silently skipped.
 - `replication_missed_events_total` counts only confirmed loss. It was incremented when a gap was first observed, so it rose continuously on a healthy cluster where events merely arrived out of order. Observed gaps are now reported separately as `gap_events`.
 - `.gitignore` no longer excludes the server entry point: the pattern `supercache` was unanchored, so it matched `cmd/supercache/` as well as the built binary.
+- The documented list of hot-reloadable fields was incomplete: `client_idle_timeout`, `auto_discover_peers`, `announce_leave`, `resync_on_gap` and `resync_min_interval` are applied by a reload but were not listed, so operators would have restarted a node to change them unnecessarily. The configuration reference now documents every key the code accepts, with each entry's reload behaviour checked against the reload logic.
 
 ## [1.0.0] - 2026-03-27
 
