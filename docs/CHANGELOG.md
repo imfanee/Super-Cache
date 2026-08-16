@@ -8,6 +8,33 @@ Copyright (c) 2024-2026 Faisal Hanif. All rights reserved. Licensed under the Su
 
 - Documentation refinements and operational runbook updates.
 
+### Added
+
+- `cluster_id`: names a cluster so a shared secret alone cannot merge two of them. Folded into the authentication proof and never sent on the wire, so the handshake cannot be used to ask a node which cluster it belongs to. Takes effect only between nodes that both set one, so a fleet can adopt it one node at a time.
+- Self-forming mesh: a node adds any peer that successfully authenticates (`auto_discover_peers`), so an autoscaled instance is reachable without editing every existing node's configuration.
+- Peer discovery from the Hetzner Cloud server inventory, re-listed periodically (`hetzner_api_token` / `HCLOUD_TOKEN`, `hetzner_label_selector`, `hetzner_network_id`, `hetzner_api_url`, `discovery_interval`). Servers with no private address are skipped rather than joined over the public interface.
+- A configuration copied from another node is recognised: a non-local `advertise_addr` is treated as a peer to join rather than an identity to claim.
+- Scale-in cleanup (`peer_forget_after`): an unreachable *learned* peer is eventually removed, so an autoscaled fleet stops accumulating the address of every instance it has ever destroyed. Configured peers and the last remaining peer are never removed.
+- Graceful departure (`announce_leave`): a node tells its peers it is shutting down so they drop its address immediately instead of waiting out the unreachability window.
+- Replication gap detection and automatic recovery (`resync_on_gap`, `resync_min_interval`): events that never arrive are confirmed lost after a grace period and the dataset is refetched, ending silent divergence.
+- `--found-cluster` command-line flag to start the first node of a new cluster. Deliberately not a configuration key, since a key travels in a machine image and every clone would found its own cluster. It applies only when no peer could be reached, so misuse is safe.
+- Replication counters: `replication_dropped_total`, `send_errors_total`, `gap_events_total`, `late_events_total`, `missed_events_total`, `resyncs_total`, and `discovered_peers`.
+
+### Changed
+
+- A dual-homed node now identifies itself by its private address rather than whichever address the default route happened to prefer.
+- Each replication event is encoded once and shared across peers, and the set of replication targets is cached between writes. At 30 peers this reduces a write from roughly 157µs/246 allocations to roughly 7µs/6 allocations, with allocations no longer growing with peer count.
+- `bootstrap_peer` is no longer the only snapshot source; configured, discovered and learned addresses are all eligible.
+
+### Fixed
+
+- A node no longer serves clients from an unsynced store: it refuses with `LOADING` and retries until it has a complete dataset, and it will not hand out its own partial store as a snapshot to another node.
+- Each peer's events are applied in the order that peer sent them. Previously a shared worker pool applied one origin's events concurrently, so consecutive writes to the same key could settle permanently on the superseded value.
+- A resync refused by the rate limiter is now remembered and carried out when the interval passes. Previously it was dropped, and because only a fresh gap requests one, a node that lost data during a burst could stay diverged indefinitely while reporting itself ready.
+- Graceful shutdown now runs to completion. The signal handler ran shutdown while the main goroutine waited on the server, and closing the client listener let the process exit mid-flight, so replication drain and the spill file were silently skipped.
+- `replication_missed_events_total` counts only confirmed loss. It was incremented when a gap was first observed, so it rose continuously on a healthy cluster where events merely arrived out of order. Observed gaps are now reported separately as `gap_events`.
+- `.gitignore` no longer excludes the server entry point: the pattern `supercache` was unanchored, so it matched `cmd/supercache/` as well as the built binary.
+
 ## [1.0.0] - 2026-03-27
 
 ### Added
