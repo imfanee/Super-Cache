@@ -48,7 +48,7 @@ func (f *fakeExt) ReloadConfig() ([]string, error) {
 }
 func (f *fakeExt) Status() map[string]any {
 	return map[string]any{
-		"uptime_sec":       f.uptime,
+		"uptime_sec":        f.uptime,
 		"clients_connected": f.clients,
 		"peers_connected":   f.peers,
 		"mem_used_bytes":    f.mem,
@@ -57,7 +57,7 @@ func (f *fakeExt) Status() map[string]any {
 	}
 }
 func (f *fakeExt) PeersList() []map[string]any { return f.peersList }
-func (f *fakeExt) PeersAdd(addr string) error { return f.peersAddErr }
+func (f *fakeExt) PeersAdd(addr string) error  { return f.peersAddErr }
 func (f *fakeExt) PeersRemove(addr string) error {
 	return f.peersRemoveErr
 }
@@ -67,7 +67,7 @@ func (f *fakeExt) DebugKeyspace(maxKeys int) (map[string]any, error) {
 	}
 	return f.debugKeys, nil
 }
-func (f *fakeExt) BootstrapStatus() map[string]any { return f.bootstrapStatus }
+func (f *fakeExt) BootstrapStatus() map[string]any     { return f.bootstrapStatus }
 func (f *fakeExt) RequestShutdown(graceful bool) error { return f.shutdownErr }
 
 // shutdownTrack embeds fakeExt and records RequestShutdown arguments.
@@ -331,12 +331,12 @@ func (r *reloadHarness) ReloadConfig() ([]string, error) {
 	return changed, nil
 }
 
-func (r *reloadHarness) Ping() string { return "PONG" }
-func (r *reloadHarness) Info() map[string]any { return map[string]any{} }
-func (r *reloadHarness) Status() map[string]any { return map[string]any{} }
-func (r *reloadHarness) PeersList() []map[string]any { return nil }
-func (r *reloadHarness) PeersAdd(string) error { return nil }
-func (r *reloadHarness) PeersRemove(string) error { return nil }
+func (r *reloadHarness) Ping() string                              { return "PONG" }
+func (r *reloadHarness) Info() map[string]any                      { return map[string]any{} }
+func (r *reloadHarness) Status() map[string]any                    { return map[string]any{} }
+func (r *reloadHarness) PeersList() []map[string]any               { return nil }
+func (r *reloadHarness) PeersAdd(string) error                     { return nil }
+func (r *reloadHarness) PeersRemove(string) error                  { return nil }
 func (r *reloadHarness) DebugKeyspace(int) (map[string]any, error) { return map[string]any{}, nil }
-func (r *reloadHarness) BootstrapStatus() map[string]any { return map[string]any{"state": "idle"} }
-func (r *reloadHarness) RequestShutdown(bool) error { return nil }
+func (r *reloadHarness) BootstrapStatus() map[string]any           { return map[string]any{"state": "idle"} }
+func (r *reloadHarness) RequestShutdown(bool) error                { return nil }

@@ -119,6 +119,62 @@ func (s *Server) runPrometheusMetrics(ctx context.Context) {
 		},
 		func() float64 { return float64(len(s.stats.PeerAddresses())) },
 	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_dropped_total",
+			Help:      "Replication events discarded because a peer's outbound queue was full. Any increase means this node and that peer have diverged.",
+		},
+		func() float64 { return float64(s.stats.ReplicationDropped()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_send_errors_total",
+			Help:      "Replication events whose socket write failed. Any increase means this node and that peer have diverged.",
+		},
+		func() float64 { return float64(s.stats.ReplicationSendErrors()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_missed_events_total",
+			Help:      "Replication events confirmed never to have arrived, after waiting for them. Any increase means this node is genuinely missing data the cluster has.",
+		},
+		func() float64 { return float64(s.stats.ReplicationMissedEvents()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_gap_events_total",
+			Help:      "Times a peer's sequence skipped forward. Expected under concurrent writes and usually resolves on its own; only replication_missed_events_total means data was lost.",
+		},
+		func() float64 { return float64(s.stats.ReplicationGapEvents()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_late_events_total",
+			Help:      "Replication events arriving at or below a sequence already seen, expected in small numbers when a link to a peer is replaced.",
+		},
+		func() float64 { return float64(s.stats.ReplicationLateEvents()) },
+	))
+	reg.MustRegister(prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "supercache",
+			Name:      "replication_resyncs_total",
+			Help:      "Times this node refetched the dataset after confirming replication events were lost. Any increase means data was missed, not merely delayed.",
+		},
+		func() float64 { return float64(s.stats.Resyncs()) },
+	))
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "supercache",
+			Name:      "discovered_peers",
+			Help:      "Addresses returned by the last peer discovery listing. Zero on a fleet that should have peers means discovery is answering but finding nothing.",
+		},
+		func() float64 { return float64(s.stats.DiscoveredPeers()) },
+	))
 	reg.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: "supercache",

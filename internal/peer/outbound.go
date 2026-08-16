@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -41,22 +42,24 @@ func (s *Service) consumeOptionalPeerAnnounce(c net.Conn, br *bufio.Reader) erro
 		return fmt.Errorf("peer: expected PEER_ANNOUNCE when gossip_peers is enabled")
 	}
 	for _, p := range pa.Peers {
-		_ = s.AddPeer(p)
+		_ = s.AddPeerFrom(p, SourceLearned)
 	}
 	return nil
 }
 
-func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Conn, br *bufio.Reader) {
+func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Conn, br *bufio.Reader, id peerIdentity) {
 	depth := s.c().PeerQueueDepth
 	if depth < 1 {
 		depth = 1
 	}
 	op := &outPeer{
-		addr:   addr,
-		nodeID: s.nodeID,
-		conn:   c,
-		w:      bufio.NewWriter(c),
-		replCh: make(chan wireRepl, depth),
+		addr:     addr,
+		nodeID:   s.nodeID,
+		remoteID: id.NodeID,
+		conn:     c,
+		w:        bufio.NewWriter(c),
+		replCh:   make(chan *replFrame, depth),
+		metrics:  s.metrics,
 	}
 	sessCtx, cancel := context.WithCancel(ctx)
 	op.cancelSession = cancel
@@ -70,7 +73,9 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 		cancel()
 		op.replStop.Store(true)
 		_ = c.Close()
-		s.unregisterOut(addr)
+		// Remove this exact link, not every link matching addr: an accepted link from the same
+		// peer carries the same advertised address and must survive this dial ending.
+		s.unregisterLink(op)
 	}()
 
 	interval := time.Duration(s.c().HeartbeatInterval) * time.Second
@@ -117,6 +122,18 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 			return
 		}
 		msg = NormalizePeerMessage(msg)
+		if msg.Type == MsgTypeReplicate {
+			// A peer that negotiated the duplex capability pushes its writes back down the
+			// connection this node opened, instead of relying on a separate dial in the other
+			// direction. Earlier builds fell through and dropped these frames silently.
+			s.handleDuplexRepl(ctx, addr, msg)
+			continue
+		}
+		if msg.Type == MsgTypeLeave {
+			// A peer this node dialled can announce its own departure down the same link.
+			s.handleLeave(msg, addr)
+			continue
+		}
 		if msg.Type != MsgTypeHeartbeat {
 			continue
 		}
@@ -139,49 +156,67 @@ func (s *Service) outboundPeerSession(ctx context.Context, addr string, c net.Co
 	}
 }
 
+// handleDuplexRepl applies a replication frame received on a connection this node dialed. It
+// routes through the same worker pool as accepted-connection replication so that bootstrap
+// buffering and ordering behave identically on both paths.
+func (s *Service) handleDuplexRepl(ctx context.Context, addr string, msg PeerMessage) {
+	var wr wireRepl
+	if err := json.Unmarshal(msg.Payload, &wr); err != nil {
+		return
+	}
+	s.noteReplArrival(wr)
+	if !s.enqueueInbound(ctx, addr, wr) {
+		// No worker pool: the service was never started via Run (unit tests drive sessions
+		// directly). Apply inline rather than dropping the write.
+		if err := applyWireRepl(s.st, wr); err != nil {
+			slog.Error("peer apply", "err", err)
+		}
+	}
+}
+
 func outboundReplWriter(ctx context.Context, op *outPeer) {
 	drainDeadline := time.Now().Add(500 * time.Millisecond)
 	for {
 		select {
 		case <-ctx.Done():
 			goto drain
-		case wr, ok := <-op.replCh:
+		case f, ok := <-op.replCh:
 			if !ok {
 				return
 			}
-			flushOutboundReplLine(op, wr)
+			flushOutboundReplLine(op, f)
 		}
 	}
 drain:
 	for len(op.replCh) > 0 && time.Now().Before(drainDeadline) {
 		select {
-		case wr := <-op.replCh:
-			flushOutboundReplLine(op, wr)
+		case f := <-op.replCh:
+			flushOutboundReplLine(op, f)
 		default:
 			time.Sleep(time.Millisecond)
 		}
 	}
 }
 
-func flushOutboundReplLine(op *outPeer, wr wireRepl) {
-	op.mu.Lock()
-	p, err := json.Marshal(wr)
-	if err != nil {
-		op.mu.Unlock()
-		return
-	}
-	msg := PeerMessage{
-		Version:   1,
-		Type:      MsgTypeReplicate,
-		NodeID:    op.nodeID,
-		SeqNum:    wr.Seq,
-		Timestamp: time.Now().UnixNano(),
-		Payload:   p,
-	}
-	err = WriteMessage(op.w, msg)
+// flushOutboundReplLine writes one pre-encoded frame. The bytes were serialised once for all
+// peers, so this only copies them onto the socket.
+func flushOutboundReplLine(op *outPeer, f *replFrame) {
+	data, err := f.bytes()
 	if err == nil {
-		err = op.w.Flush()
+		op.mu.Lock()
+		_, err = op.w.Write(data)
+		if err == nil {
+			err = op.w.Flush()
+		}
+		op.mu.Unlock()
 	}
-	op.mu.Unlock()
-	_ = err // TCP write failure; session read loop or heartbeat will tear down.
+	if err != nil {
+		// The session read loop or heartbeat tears the link down, but this particular event is
+		// gone and nothing downstream would otherwise record that it never arrived.
+		if op.metrics != nil {
+			op.metrics.AddReplicationSendError(1)
+		}
+		slog.Warn("replication write failed; event not delivered",
+			"peer", op.addr, "op", f.wire.Op, "seq", f.wire.Seq, "err", err)
+	}
 }

@@ -41,6 +41,20 @@ type stats struct {
 	bootstrapKeys  atomic.Int64
 
 	bootstrapReplDepth atomic.Int64
+
+	// Replication events this node failed to hand to a peer. Both are silent data loss: the
+	// local write succeeded, the peer never saw it, and no receiver reads the sequence numbers
+	// that would otherwise reveal the gap.
+	replDropped    atomic.Int64
+	replSendErrors atomic.Int64
+
+	// Replication events a peer sent that never reached this node, detected by a skip in its
+	// sequence numbers, plus stragglers arriving behind a sequence already seen.
+	discoveredPeers  atomic.Int64
+	resyncs          atomic.Int64
+	replGapEvents    atomic.Int64
+	replMissedEvents atomic.Int64
+	replLateEvents   atomic.Int64
 }
 
 func newStats(nodeID string, clientPort int) *stats {
@@ -81,6 +95,81 @@ func (s *stats) SetReplicationStats(inboundConnected int, outboundConnectedAddrs
 // SetBootstrapInboundQueueDepth implements peer.PeerMetrics (P2.3).
 func (s *stats) SetBootstrapInboundQueueDepth(depth int) {
 	s.bootstrapReplDepth.Store(int64(depth))
+}
+
+// AddReplicationDropped implements peer.PeerMetrics.
+func (s *stats) AddReplicationDropped(n int64) {
+	s.replDropped.Add(n)
+}
+
+// AddReplicationSendError implements peer.PeerMetrics.
+func (s *stats) AddReplicationSendError(n int64) {
+	s.replSendErrors.Add(n)
+}
+
+// setDiscoveredPeers records how many addresses the last discovery listing returned. A drop to
+// zero on a fleet that should have peers means discovery is answering but finding nothing,
+// which looks identical to a healthy standalone node unless it is measured.
+func (s *stats) setDiscoveredPeers(n int64) {
+	s.discoveredPeers.Store(n)
+}
+
+// addResync counts a dataset refetch triggered by confirmed replication loss. Any occurrence is
+// worth an alert: it means events were lost, not merely delayed.
+func (s *stats) addResync(n int64) {
+	s.resyncs.Add(n)
+}
+
+// Resyncs returns how many times this node has refetched after confirmed loss.
+func (s *stats) Resyncs() int64 {
+	return s.resyncs.Load()
+}
+
+// DiscoveredPeers returns the size of the last discovery listing.
+func (s *stats) DiscoveredPeers() int64 {
+	return s.discoveredPeers.Load()
+}
+
+// AddReplicationGap implements peer.PeerMetrics. It records that a gap was observed, which is
+// not the same as data being lost: the missing events are usually just moments behind.
+func (s *stats) AddReplicationGap(missed int64) {
+	s.replGapEvents.Add(1)
+}
+
+// AddReplicationLost implements peer.PeerMetrics. This counts events confirmed never to have
+// arrived, which is the number worth alerting on.
+func (s *stats) AddReplicationLost(n int64) {
+	s.replMissedEvents.Add(n)
+}
+
+// AddReplicationLate implements peer.PeerMetrics.
+func (s *stats) AddReplicationLate(n int64) {
+	s.replLateEvents.Add(n)
+}
+
+// ReplicationGapEvents returns how many times a peer's sequence numbers skipped forward.
+func (s *stats) ReplicationGapEvents() int64 {
+	return s.replGapEvents.Load()
+}
+
+// ReplicationMissedEvents returns how many replication events never arrived, in total.
+func (s *stats) ReplicationMissedEvents() int64 {
+	return s.replMissedEvents.Load()
+}
+
+// ReplicationLateEvents returns events that arrived behind a sequence already seen.
+func (s *stats) ReplicationLateEvents() int64 {
+	return s.replLateEvents.Load()
+}
+
+// ReplicationDropped returns replication events discarded because a peer's queue was full.
+func (s *stats) ReplicationDropped() int64 {
+	return s.replDropped.Load()
+}
+
+// ReplicationSendErrors returns replication events whose socket write failed.
+func (s *stats) ReplicationSendErrors() int64 {
+	return s.replSendErrors.Load()
 }
 
 // BootstrapInboundQueueDepth returns the current inbound replication queue depth during bootstrap (0 when idle).

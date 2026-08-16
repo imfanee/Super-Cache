@@ -4,8 +4,8 @@
 package server
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"

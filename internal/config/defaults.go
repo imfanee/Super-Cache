@@ -27,6 +27,20 @@ const DefaultPeerQueueDepth = 50000
 // DefaultHeartbeatInterval is the default heartbeat interval in seconds.
 const DefaultHeartbeatInterval = 5
 
+// DefaultDiscoveryInterval is how often peers are re-listed from discovery providers, in
+// seconds. Membership changes on the timescale of an autoscaler reacting to load, so polling
+// faster buys nothing and only adds API calls.
+const DefaultDiscoveryInterval = 60
+
+// DefaultPeerForgetAfter is how long a learned peer may stay unreachable before it is removed,
+// in seconds. An hour is far longer than a reboot or a deploy, so an address only reaches it
+// after the machine has genuinely gone.
+const DefaultPeerForgetAfter = 3600
+
+// DefaultResyncMinInterval is the shortest time between two resyncs, in seconds. Five minutes is
+// long enough that a node repeatedly losing events still spends most of its time serving.
+const DefaultResyncMinInterval = 300
+
 // DefaultHeartbeatTimeout is the default peer heartbeat timeout in seconds.
 const DefaultHeartbeatTimeout = 15
 

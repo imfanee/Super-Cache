@@ -20,19 +20,19 @@ import (
 
 // Standard RESP error payloads (exact Redis-style text after leading '-').
 const (
-	errWrongType     = "WRONGTYPE Operation against a key holding the wrong kind of value"
-	errNotInt        = "ERR value is not an integer or out of range"
-	errIncrOverflow  = "ERR increment or decrement would overflow"
-	errNoSuchKey     = "ERR no such key"
-	errDBRange       = "ERR DB index is out of range"
-	errOOM           = "OOM command not allowed when used memory > 'maxmemory'"
-	errWrongPass     = "WRONGPASS invalid username-password pair or user is disabled"
-	errAuthNoPass    = "ERR Client sent AUTH, but no password is set. Did you mean ACL SETUSER with >password?"
-	errNoAuth        = "NOAUTH Authentication required"
-	errExecNoMulti   = "ERR EXEC without MULTI"
-	errMultiNested   = "ERR MULTI calls can not be nested"
+	errWrongType      = "WRONGTYPE Operation against a key holding the wrong kind of value"
+	errNotInt         = "ERR value is not an integer or out of range"
+	errIncrOverflow   = "ERR increment or decrement would overflow"
+	errNoSuchKey      = "ERR no such key"
+	errDBRange        = "ERR DB index is out of range"
+	errOOM            = "OOM command not allowed when used memory > 'maxmemory'"
+	errWrongPass      = "WRONGPASS invalid username-password pair or user is disabled"
+	errAuthNoPass     = "ERR Client sent AUTH, but no password is set. Did you mean ACL SETUSER with >password?"
+	errNoAuth         = "NOAUTH Authentication required"
+	errExecNoMulti    = "ERR EXEC without MULTI"
+	errMultiNested    = "ERR MULTI calls can not be nested"
 	errDiscardNoMulti = "ERR DISCARD without MULTI"
-	errSyntax        = "ERR syntax error"
+	errSyntax         = "ERR syntax error"
 )
 
 func keyspaceHit(ctx *CommandContext, n int64) {

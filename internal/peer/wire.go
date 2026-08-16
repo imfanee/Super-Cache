@@ -23,6 +23,7 @@ const (
 	wireOpHeartbeat    = "HEARTBEAT"
 	wireOpHeartbeatAck = "HEARTBEAT_ACK"
 	wireOpPeerAnnounce = "PEER_ANNOUNCE"
+	wireOpLeave        = "LEAVE"
 )
 
 // MaxPeerPayload is the maximum allowed JSON payload size for one framed message (32 MiB).
@@ -40,6 +41,17 @@ type wireHeartbeat struct {
 type wirePeerAnnounce struct {
 	Op    string   `json:"op"`
 	Peers []string `json:"peers"`
+}
+
+// wireLeave is sent to every peer during a graceful shutdown.
+//
+// It turns a departure that would otherwise take an hour to notice into something immediate.
+// Advertise identifies which address is going away, since that is what the receiver holds in
+// its peer list; NodeID is carried for logging and to recognise the sender.
+type wireLeave struct {
+	Op        string `json:"op"`
+	NodeID    string `json:"node_id,omitempty"`
+	Advertise string `json:"adv,omitempty"`
 }
 
 // wireAck is the response to successful AUTH proof.
@@ -90,6 +102,24 @@ func WriteMessage(w io.Writer, msg PeerMessage) error {
 		return fmt.Errorf("peer wire: write payload: %w", err)
 	}
 	return nil
+}
+
+// EncodeMessage returns one complete framed message: magic (4) + length (4) + JSON body.
+//
+// Replication frames are identical for every peer, so encoding once and writing the same bytes
+// to each link replaces one JSON marshal per peer with one per write.
+func EncodeMessage(msg PeerMessage) ([]byte, error) {
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("peer wire: marshal peer message: %w", err)
+	}
+	if len(body) > MaxPeerPayload {
+		return nil, fmt.Errorf("peer wire: marshal peer message: payload too large: %d", len(body))
+	}
+	out := make([]byte, 8, 8+len(body))
+	binary.BigEndian.PutUint32(out[0:4], PeerMagic)
+	binary.BigEndian.PutUint32(out[4:8], uint32(len(body)))
+	return append(out, body...), nil
 }
 
 // ReadMessage reads one framed PeerMessage after the 8-byte header.
@@ -154,6 +184,8 @@ func NormalizePeerMessage(msg PeerMessage) PeerMessage {
 		msg.Type = MsgTypeHeartbeat
 	case wireOpPeerAnnounce:
 		msg.Type = MsgTypeNodeList
+	case wireOpLeave:
+		msg.Type = MsgTypeLeave
 	case wireOpBootstrap:
 		msg.Type = MsgTypeBootstrapReq
 	case wireOpBootstrapEnd:

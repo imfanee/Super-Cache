@@ -81,7 +81,7 @@ Goal: ensure no sensitive value is logged directly.
 
 Recommended boundaries:
 
-- Peer port (`7379` default): allow only cluster nodes.
+- Peer port (`7379` default, TCP): allow only cluster nodes.
 - Client port (`6379` default): allow application subnets only.
 - Mgmt socket: filesystem ACL only; do not expose broadly.
 - Mgmt TCP (if enabled): bind loopback, tunnel when remote admin is needed.
@@ -94,6 +94,11 @@ iptables -A INPUT -p tcp --dport 7379 -j DROP
 iptables -A INPUT -p tcp --dport 6379 -s 10.20.0.0/24 -j ACCEPT
 iptables -A INPUT -p tcp --dport 6379 -j DROP
 ```
+
+On a host with separate public and private interfaces, bind `peer_bind` to the private address
+and drop the peer port on the public interface. Replication frames are plaintext unless peer TLS
+is configured, so a peer port reachable from the internet exposes cache contents to anyone who
+learns the shared secret.
 
 ## Logging and Auditability
 

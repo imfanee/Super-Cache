@@ -226,13 +226,20 @@ func TestEnsureDialNotRunning(t *testing.T) {
 }
 
 type captureBootstrapMetrics struct {
-	depth atomic.Int64
+	depth      atomic.Int64
+	dropped    atomic.Int64
+	sendErrors atomic.Int64
 }
 
 func (c *captureBootstrapMetrics) SetReplicationStats(int, []string) {}
 func (c *captureBootstrapMetrics) SetBootstrapInboundQueueDepth(d int) {
 	c.depth.Store(int64(d))
 }
+func (c *captureBootstrapMetrics) AddReplicationDropped(n int64)   { c.dropped.Add(n) }
+func (c *captureBootstrapMetrics) AddReplicationSendError(n int64) { c.sendErrors.Add(n) }
+func (c *captureBootstrapMetrics) AddReplicationGap(int64)         {}
+func (c *captureBootstrapMetrics) AddReplicationLate(int64)        {}
+func (c *captureBootstrapMetrics) AddReplicationLost(int64)        {}
 
 func TestBootstrapInboundBufferDrain(t *testing.T) {
 	secret := strings.Repeat("f", 32)
@@ -312,7 +319,7 @@ func TestBootstrapInboundBufferDrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,8 +553,8 @@ func TestFinalizeGracefulShutdownSpillAndEmptyPath(t *testing.T) {
 	defer st.Close()
 	svc := NewService(cfg, st, nil, nil, "n1")
 
-	ch := make(chan wireRepl, 2)
-	ch <- wireRepl{Op: "SET", Key: "spk", Value: []byte("v")}
+	ch := make(chan *replFrame, 2)
+	ch <- mustFrame(t, svc, wireRepl{Op: "SET", Key: "spk", Value: []byte("v")})
 	done := make(chan struct{})
 	close(done)
 
@@ -571,8 +578,8 @@ func TestFinalizeGracefulShutdownSpillAndEmptyPath(t *testing.T) {
 		t.Fatalf("expected spill file: %v", err)
 	}
 
-	ch2 := make(chan wireRepl, 1)
-	ch2 <- wireRepl{Op: "DEL", Key: "z"}
+	ch2 := make(chan *replFrame, 1)
+	ch2 <- mustFrame(t, svc, wireRepl{Op: "DEL", Key: "z"})
 	op2 := &outPeer{
 		addr:          "127.0.0.1:40001",
 		replCh:        ch2,
@@ -966,8 +973,8 @@ func TestDrainReplicationOutboundDrainsBufferedPeer(t *testing.T) {
 	}
 	defer st.Close()
 	svc := NewService(cfg, st, nil, nil, "n1")
-	ch := make(chan wireRepl, 2)
-	ch <- wireRepl{Op: "SET", Key: "q", Value: []byte("1")}
+	ch := make(chan *replFrame, 2)
+	ch <- mustFrame(t, svc, wireRepl{Op: "SET", Key: "q", Value: []byte("1")})
 	svc.mu.Lock()
 	svc.out = append(svc.out, &outPeer{addr: "127.0.0.1:1", replCh: ch})
 	svc.mu.Unlock()
@@ -1097,9 +1104,9 @@ func TestOutboundReplWriterCancelDrainAndClosedChannel(t *testing.T) {
 	op := &outPeer{
 		nodeID: "n1",
 		w:      bufio.NewWriter(c1),
-		replCh: make(chan wireRepl, 2),
+		replCh: make(chan *replFrame, 2),
 	}
-	op.replCh <- wireRepl{Op: "SET", Key: "k", Value: []byte("v"), Seq: 1}
+	op.replCh <- mustFrame(t, nil, wireRepl{Op: "SET", Key: "k", Value: []byte("v"), Seq: 1})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -1119,8 +1126,18 @@ func TestOutboundReplWriterCancelDrainAndClosedChannel(t *testing.T) {
 	op2 := &outPeer{
 		nodeID: "n2",
 		w:      bufio.NewWriter(io.Discard),
-		replCh: make(chan wireRepl),
+		replCh: make(chan *replFrame),
 	}
 	close(op2.replCh)
 	outboundReplWriter(context.Background(), op2)
+}
+
+// mustFrame encodes a replication event the same way the fan-out path does, so tests that push
+// directly onto a link's queue produce frames the writer can actually send.
+func mustFrame(t *testing.T, s *Service, wr wireRepl) *replFrame {
+	t.Helper()
+	if s == nil {
+		s = &Service{nodeID: "test-node"}
+	}
+	return s.buildReplFrame(wr)
 }

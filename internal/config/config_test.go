@@ -668,6 +668,31 @@ func TestMergePeerListsAndBootstrapCandidates(t *testing.T) {
 	}
 }
 
+// TestBootstrapCandidatesWithoutBootstrapPeer covers the case an autoscaled node is always in:
+// it has peers but no bootstrap_peer, because its peers were not known when its image was
+// built. Those peers must still be offered as snapshot sources, or the node starts empty and
+// answers misses for every key the cluster holds.
+func TestBootstrapCandidatesWithoutBootstrapPeer(t *testing.T) {
+	c := minimalValidConfig()
+	c.BootstrapPeer = ""
+	c.Peers = []string{"10.0.0.1:7379", " 10.0.0.2:7379 ", "", "10.0.0.1:7379"}
+	cand := BootstrapCandidates(&c)
+	if len(cand) != 2 || cand[0] != "10.0.0.1:7379" || cand[1] != "10.0.0.2:7379" {
+		t.Fatalf("peers should be bootstrap sources on their own: %v", cand)
+	}
+}
+
+// TestBootstrapCandidatesEmptyWhenNoPeers keeps a genuinely standalone node standalone: with
+// nowhere to sync from there is nothing to wait for, and its own store is authoritative.
+func TestBootstrapCandidatesEmptyWhenNoPeers(t *testing.T) {
+	c := minimalValidConfig()
+	c.BootstrapPeer = ""
+	c.Peers = nil
+	if cand := BootstrapCandidates(&c); len(cand) != 0 {
+		t.Fatalf("expected no candidates: %v", cand)
+	}
+}
+
 func TestClientAndPeerTLSEnabled(t *testing.T) {
 	var nilCfg *Config
 	if nilCfg.ClientTLSEnabled() || nilCfg.PeerTLSEnabled() {

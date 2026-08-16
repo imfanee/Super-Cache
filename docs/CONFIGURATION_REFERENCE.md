@@ -26,6 +26,12 @@ The following table summarises all clustering-related parameters, their defaults
 | heartbeat_timeout | 15 seconds | Time before a silent peer is declared failed | Must be greater than heartbeat_interval. Reconnection begins immediately on failure detection. |
 | bootstrap_queue_depth | 100000 | Maximum replication messages buffered during bootstrap | Size to peak write rate times expected bootstrap duration plus 50 percent. |
 | peer_queue_depth | 50000 | Maximum outbound replication messages per peer | Increase if logs show dropped messages during write bursts. |
+| cluster_id | none | Names the cluster, so a shared secret alone cannot merge two of them | Must match on every node. Takes effect only once both ends of a link set one. |
+| discovery_interval | 60 seconds | How often peers are re-listed from discovery providers | Negative disables. Without re-listing, a node whose known addresses were all replaced stays isolated. |
+| peer_forget_after | 3600 seconds | How long a learned peer may stay unreachable before removal | Negative keeps addresses forever. Never removes configured peers or the last remaining one. |
+| announce_leave | true | Tell peers about a clean shutdown so they drop the address at once | Best effort only; `peer_forget_after` remains the backstop for a node that is killed. |
+| resync_on_gap | true | Refetch the dataset when replication events are confirmed lost | Costs a `LOADING` period. Rate limited by `resync_min_interval`. |
+| resync_min_interval | 300 seconds | Shortest time between two resyncs | Bounds the cost of a fault that keeps producing loss. A refused resync is deferred, not dropped. |
 
 ## Parameter Reference
 
@@ -61,6 +67,24 @@ Range `1..65535`, must not equal peer/mgmt/metrics active ports.
 
 ```toml
 client_port = 6379
+```
+
+### client_idle_timeout
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_idle_timeout` |
+| Type | int (seconds) |
+| Default | `3600` |
+| Hot-Reload | Yes |
+| Required | No |
+
+Closes client connections that have been idle for this long. `0` uses the default; negative disables the timeout.
+
+It exists so dead connections cannot pin a handler goroutine and a file descriptor forever — the usual cause is a socket left open by a client's forked children, which the client itself will never close. Connections in subscribe mode or inside a `MULTI` block are exempt, since those are legitimately idle while waiting.
+
+```toml
+client_idle_timeout = 3600
 ```
 
 ### peer_bind
@@ -208,6 +232,22 @@ File output requires writable parent directory.
 log_output = "/var/log/supercache.log"
 ```
 
+### log_format
+
+| Item | Value |
+|---|---|
+| TOML Key | `log_format` |
+| Type | string |
+| Default | `text` |
+| Hot-Reload | Yes |
+| Required | No |
+
+Selects the log output format: `text`, `json`, or `logfmt`. Any other value is rejected at startup. `logfmt` emits `key=value` lines like `text`; `json` is the one to use where logs are shipped to a structured store.
+
+```toml
+log_format = "json"
+```
+
 ### bootstrap_queue_depth
 
 | Item | Value |
@@ -284,6 +324,493 @@ heartbeat_timeout = 15
 mgmt_socket = "/var/run/supercache.sock"
 ```
 
+### node_id
+
+| Item | Value |
+|---|---|
+| TOML Key | `node_id` |
+| Type | string |
+| Default | derived from the primary IP |
+| Hot-Reload | No |
+| Required | No |
+
+Optionally pins this node's cluster identity. Empty derives a stable identity from the node's primary IP, so an instance keeps one identity across restarts with no per-node configuration baked into the machine image.
+
+Because the derived identity comes from the primary IP, two nodes on the same machine derive the same identity and refuse to connect to each other. Pin distinct values to run more than one node on a host.
+
+```toml
+node_id = "00000000000000000000000000000001"
+```
+
+### advertise_addr
+
+| Item | Value |
+|---|---|
+| TOML Key | `advertise_addr` |
+| Type | string (host:port) |
+| Default | derived from the primary IP and `peer_port` |
+| Hot-Reload | No |
+| Required | No |
+
+The address other nodes should dial to reach this node's peer listener. The default is what an autoscaled node needs, since its address is unknown until boot.
+
+**It must name an address this machine holds.** A value belonging to another machine is taken as evidence that the configuration was copied from that node — a common result of building an image from a running node. The address then becomes a peer candidate, and this node advertises its own address instead, so a clone joins the cluster it was copied from rather than claiming its identity. A loud error is logged when this happens.
+
+The consequence is that an address reachable only from elsewhere, such as one behind NAT or a load balancer, is not supported.
+
+```toml
+advertise_addr = "10.0.0.11:7379"
+```
+
+### bootstrap_peer
+
+| Item | Value |
+|---|---|
+| TOML Key | `bootstrap_peer` |
+| Type | string (host:port) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+An optional address to pull a full snapshot from once at startup. Empty skips it.
+
+This is no longer the only snapshot source: entries in `peers`, addresses learned from discovery, and a copied `advertise_addr` are all tried as well, so a node with any known address can bootstrap without one being singled out here. A node that cannot reach any source refuses commands with `LOADING` and keeps retrying rather than serving an empty store. A node that is itself still syncing will not serve its partial store as a snapshot to anyone else.
+
+```toml
+bootstrap_peer = "10.0.0.12:7379"
+```
+
+### cluster_id
+
+| Item | Value |
+|---|---|
+| TOML Key | `cluster_id` |
+| Type | string |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+Names the cluster this node belongs to, and must match on every node in it.
+
+The shared secret alone cannot separate two clusters: a node built from another cluster's image carries that secret, so it authenticates and joins, taking the other cluster's data with it. A different `cluster_id` makes that impossible.
+
+The value is never sent on the wire. It is folded into the authentication proof, so a mismatch fails exactly as a wrong secret does, and no node can be asked which cluster it belongs to. **A mismatch is reported only as `hmac verification failed`, so check `cluster_id` before suspecting the secret.** Protection applies only between nodes that both set one, which means it takes effect once the whole fleet has it; until then `shared_secret` remains the boundary. That is deliberate, so a fleet can be upgraded one node at a time without partitioning.
+
+At most 128 characters, printable non-space ASCII.
+
+```toml
+cluster_id = "prod-eu"
+```
+
+### auto_discover_peers
+
+| Item | Value |
+|---|---|
+| TOML Key | `auto_discover_peers` |
+| Type | bool |
+| Default | `true` |
+| Hot-Reload | Yes |
+| Required | No |
+
+Makes a node add any peer that successfully authenticates to it, so a node created by an autoscaler is reachable without editing every existing node's config. Set to `false` to keep membership strictly to the configured list.
+
+Peers are authenticated by shared secret either way, so this changes which authenticated nodes receive replication, not who may connect.
+
+```toml
+auto_discover_peers = true
+```
+
+### discovery_interval
+
+| Item | Value |
+|---|---|
+| TOML Key | `discovery_interval` |
+| Type | int (seconds) |
+| Default | `60` |
+| Hot-Reload | No |
+| Required | No |
+
+How often peers are re-listed from discovery providers. `0` uses the default; negative disables periodic discovery.
+
+Re-listing matters because a node whose known addresses have all been replaced would otherwise stay isolated forever: its own dial loops keep retrying addresses that no longer exist, and nothing ever tells it about the machines that took their place.
+
+```toml
+discovery_interval = 60
+```
+
+### hetzner_api_token
+
+| Item | Value |
+|---|---|
+| TOML Key | `hetzner_api_token` |
+| Type | string |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+Enables discovery from the Hetzner Cloud server inventory. Empty falls back to the `HCLOUD_TOKEN` environment variable, which is preferred because it keeps the token out of a machine image. A read-only token is sufficient; discovery only lists servers.
+
+Servers with no private IP are skipped rather than joined over the public interface. With discovery enabled, a node that finds no peers waits in `LOADING` until a listing succeeds and names nobody, instead of assuming it is alone.
+
+```toml
+# prefer the HCLOUD_TOKEN environment variable over this key
+hetzner_api_token = ""
+```
+
+### hetzner_label_selector
+
+| Item | Value |
+|---|---|
+| TOML Key | `hetzner_label_selector` |
+| Type | string |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+Restricts the server listing. Empty lists every server in the project, which is rarely what you want in a project that hosts more than this cluster.
+
+```toml
+hetzner_label_selector = "role=supercache"
+```
+
+### hetzner_network_id
+
+| Item | Value |
+|---|---|
+| TOML Key | `hetzner_network_id` |
+| Type | int64 |
+| Default | `0` |
+| Hot-Reload | No |
+| Required | No |
+
+Selects which private network to take an address from, on a server attached to more than one. `0` uses the first reported, which is ambiguous on multi-homed servers — set it explicitly there.
+
+```toml
+hetzner_network_id = 1234567
+```
+
+### hetzner_api_url
+
+| Item | Value |
+|---|---|
+| TOML Key | `hetzner_api_url` |
+| Type | string |
+| Default | none (the real API) |
+| Hot-Reload | No |
+| Required | No |
+
+Overrides the API root, for an outbound proxy or a test double.
+
+```toml
+hetzner_api_url = "http://proxy.internal:8080/v1"
+```
+
+### announce_leave
+
+| Item | Value |
+|---|---|
+| TOML Key | `announce_leave` |
+| Type | bool |
+| Default | `true` |
+| Hot-Reload | Yes |
+| Required | No |
+
+Makes a node tell its peers it is shutting down, so they drop its address immediately instead of waiting out `peer_forget_after`.
+
+It is best effort: a node killed outright announces nothing, and the unreachability window remains the backstop. Set to `false` where a restart should leave membership untouched, at the cost of every rolling restart being invisible to peers until they notice on their own.
+
+```toml
+announce_leave = true
+```
+
+### peer_forget_after
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_forget_after` |
+| Type | int (seconds) |
+| Default | `3600` |
+| Hot-Reload | No |
+| Required | No |
+
+How long a peer that was *learned* rather than configured may stay unreachable before it is removed. `0` uses the default; negative keeps every address forever, which is the behaviour before this setting existed.
+
+Without it, an autoscaled fleet accumulates the address of every instance it has ever destroyed, each with a goroutine redialling it. Addresses from `peers` or added manually are never removed by this, and the last remaining peer is never removed at all — otherwise both sides of a long partition could empty their lists and never reconnect. Removal is recoverable: a node that returns is learned again when it connects.
+
+```toml
+peer_forget_after = 3600
+```
+
+### resync_on_gap
+
+| Item | Value |
+|---|---|
+| TOML Key | `resync_on_gap` |
+| Type | bool |
+| Default | `true` |
+| Hot-Reload | Yes |
+| Required | No |
+
+Makes a node refetch the dataset when replication events from a peer are confirmed lost.
+
+Replication carries changes rather than the state they produce, so an event that never arrived is missed permanently and nothing else will correct it. Refetching costs a period of refusing commands, which is why it happens only once loss is confirmed — a skipped sequence is held briefly first, since a link switch can deliver an event late — and no more often than `resync_min_interval`. Set to `false` to keep detection and metrics without the refetch.
+
+```toml
+resync_on_gap = true
+```
+
+### resync_min_interval
+
+| Item | Value |
+|---|---|
+| TOML Key | `resync_min_interval` |
+| Type | int (seconds) |
+| Default | `300` |
+| Hot-Reload | Yes |
+| Required | No |
+
+The shortest time between two resyncs. `0` uses the default. It bounds the cost of a fault that keeps producing loss: without it, such a node would refetch continuously and never serve. A resync refused by this limit is remembered and carried out once the interval passes, rather than dropped.
+
+```toml
+resync_min_interval = 300
+```
+
+### peer_state_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_state_file` |
+| Type | string |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+Optional JSON path used to persist the merged peer list across restarts, so a node does not lose everything it has learned when it is restarted. It is written from the live peer list, so an address removed by `peer_forget_after` or by a leave announcement drops out of the file automatically.
+
+```toml
+peer_state_file = "/var/lib/supercache/peers.json"
+```
+
+### gossip_peers
+
+| Item | Value |
+|---|---|
+| TOML Key | `gossip_peers` |
+| Type | bool |
+| Default | `false` |
+| Hot-Reload | No |
+| Required | No |
+
+Sends a peer announcement after the mesh handshake, so nodes learn each other's addresses from a node they are already connected to.
+
+This is a separate mechanism from `auto_discover_peers`, which adds a peer that dials in. Addresses learned by either route are subject to `peer_forget_after`.
+
+```toml
+gossip_peers = false
+```
+
+### repl_shutdown_spill_path
+
+| Item | Value |
+|---|---|
+| TOML Key | `repl_shutdown_spill_path` |
+| Type | string |
+| Default | `supercache-repl-spill.json` beside the config file |
+| Hot-Reload | No |
+| Required | No |
+
+Where to write outbound replication messages that were still queued when the process exited and could not be flushed in time. `-` disables writing. With no config file path to derive from, the system temporary directory is used.
+
+This is a diagnostic record of what a peer never received, **not a data file**: it is never read back at startup, and it holds pending messages rather than the dataset. Super-Cache keeps no on-disk copy of its data, so a whole-cluster restart starts empty by design.
+
+```toml
+repl_shutdown_spill_path = "/var/lib/supercache/repl-spill.json"
+```
+
+### metrics_port
+
+| Item | Value |
+|---|---|
+| TOML Key | `metrics_port` |
+| Type | int |
+| Default | `0` (disabled) |
+| Hot-Reload | No |
+| Required | No |
+
+TCP port for the Prometheus scrape endpoint at `/metrics`. `0` disables it. Must not collide with the client, peer or management ports.
+
+The replication counters worth alerting on are exposed here — in particular `supercache_replication_missed_events_total` (confirmed data loss) and `supercache_replication_resyncs_total`. Note that `supercache_replication_gap_events_total` is diagnostic and rises harmlessly under concurrent writes; it is not a loss signal.
+
+```toml
+metrics_port = 9090
+```
+
+### metrics_bind
+
+| Item | Value |
+|---|---|
+| TOML Key | `metrics_bind` |
+| Type | string |
+| Default | none (`0.0.0.0` when `metrics_port` is set) |
+| Hot-Reload | No |
+| Required | No |
+
+Listen address for the metrics endpoint. Because it defaults to all interfaces, set it to an internal address if the scrape endpoint should not be publicly reachable — it is not authenticated.
+
+```toml
+metrics_bind = "10.0.0.11"
+```
+
+### mgmt_tcp_port
+
+| Item | Value |
+|---|---|
+| TOML Key | `mgmt_tcp_port` |
+| Type | int |
+| Default | `0` (disabled, Unix socket only) |
+| Hot-Reload | No |
+| Required | No |
+
+TCP port for the management API. `0` leaves management available only over `mgmt_socket`.
+
+```toml
+mgmt_tcp_port = 7000
+```
+
+### mgmt_tcp_bind
+
+| Item | Value |
+|---|---|
+| TOML Key | `mgmt_tcp_bind` |
+| Type | string |
+| Default | `127.0.0.1` when `mgmt_tcp_port` is set |
+| Hot-Reload | No |
+| Required | No |
+
+Listen address for the TCP management API. **It must be a loopback address** (`127.0.0.1`, `::1` or `localhost`); anything else is rejected at startup, because the management API changes cluster membership and is not authenticated. Reach it from another host over SSH or a tunnel rather than by binding it outward.
+
+Setting this without `mgmt_tcp_port` is an error rather than a silent no-op.
+
+```toml
+mgmt_tcp_bind = "127.0.0.1"
+```
+
+### client_tls_cert_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_tls_cert_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM certificate for TLS on the client port. TLS is enabled only when this and `client_tls_key_file` are both set; setting one without the other is an error rather than a silent fallback to plaintext.
+
+```toml
+client_tls_cert_file = "/etc/supercache/client.crt"
+```
+
+### client_tls_key_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_tls_key_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM private key matching `client_tls_cert_file`. Both must be set together, and both must be readable at startup.
+
+```toml
+client_tls_key_file = "/etc/supercache/client.key"
+```
+
+### client_tls_min_version
+
+| Item | Value |
+|---|---|
+| TOML Key | `client_tls_min_version` |
+| Type | string |
+| Default | `1.2` |
+| Hot-Reload | No |
+| Required | No |
+
+Minimum TLS version accepted on the client port. Only `1.2` and `1.3` are valid; any other value is rejected at startup.
+
+```toml
+client_tls_min_version = "1.3"
+```
+
+### peer_tls_cert_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_cert_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM certificate for TLS on the peer mesh listener. Peer TLS is enabled only when this and `peer_tls_key_file` are both set.
+
+Peer TLS protects replication in transit; it does not replace `shared_secret`, which still authenticates the peer, nor `cluster_id`, which still separates clusters.
+
+```toml
+peer_tls_cert_file = "/etc/supercache/peer.crt"
+```
+
+### peer_tls_key_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_key_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM private key matching `peer_tls_cert_file`. Both must be set together.
+
+```toml
+peer_tls_key_file = "/etc/supercache/peer.key"
+```
+
+### peer_tls_ca_file
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_ca_file` |
+| Type | string (path) |
+| Default | none |
+| Hot-Reload | No |
+| Required | No |
+
+PEM CA bundle used to verify peer certificates on outbound dials and on bootstrap. **Required when peer TLS is enabled** — without it an outbound dial has nothing to verify against. Setting it while peer TLS is not configured is also an error, so a half-finished TLS setup fails loudly instead of quietly staying plaintext.
+
+```toml
+peer_tls_ca_file = "/etc/supercache/peer-ca.crt"
+```
+
+### peer_tls_min_version
+
+| Item | Value |
+|---|---|
+| TOML Key | `peer_tls_min_version` |
+| Type | string |
+| Default | `1.2` |
+| Hot-Reload | No |
+| Required | No |
+
+Minimum TLS version accepted on the peer listener. Only `1.2` and `1.3` are valid.
+
+Raising this to `1.3` must be done across the fleet before it is enforced anywhere: a node that requires 1.3 cannot replicate with one that offers only 1.2, so a partial rollout partitions the cluster.
+
+```toml
+peer_tls_min_version = "1.2"
+```
+
 ## Hot-Reload Reference
 
 Reload command:
@@ -304,6 +831,13 @@ Hot-reloadable fields:
 - `heartbeat_interval`
 - `heartbeat_timeout`
 - `peer_queue_depth`
+- `client_idle_timeout`
+- `auto_discover_peers`
+- `announce_leave`
+- `resync_on_gap`
+- `resync_min_interval`
+
+Every other key requires a restart. A reload that changes one is reported as blocked rather than applied silently, so the running configuration never diverges from the file without saying so.
 
 ## Validation Rules
 
@@ -316,8 +850,10 @@ Hot-reloadable fields:
 - heartbeat timeout > interval
 - peer address parseability
 - writable `log_output` parent for file mode
-- loopback-only mgmt TCP bind
-- TLS file consistency and readability
+- loopback-only mgmt TCP bind, and `mgmt_tcp_bind` set without `mgmt_tcp_port` is rejected
+- TLS file consistency and readability: client and peer cert/key must each be set together, `peer_tls_ca_file` is required when peer TLS is enabled and rejected when it is not
+- TLS minimum version is `1.2` or `1.3` only
+- `cluster_id` at most 128 characters, printable non-space ASCII
 
 ## Example Configurations
 

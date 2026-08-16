@@ -71,6 +71,13 @@ type InfoProvider interface {
 	PeerAddresses() []string
 	NodeID() string
 	BootstrapState() string
+	// ReplicationDropped and ReplicationSendErrors count replication events that never reached
+	// a peer, from a full queue and a failed socket write respectively.
+	ReplicationDropped() int64
+	ReplicationSendErrors() int64
+	// ReplicationMissedEvents counts events a peer sent that never arrived, which means this
+	// node and that peer hold different data.
+	ReplicationMissedEvents() int64
 	// ServerVersion is the supercache binary build label (e.g. dev or git tag).
 	ServerVersion() string
 }

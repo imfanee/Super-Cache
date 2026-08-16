@@ -1523,4 +1523,3 @@ func TestApplySnapshotSecondEntryFails(t *testing.T) {
 		t.Fatal("expected error on second entry")
 	}
 }
-

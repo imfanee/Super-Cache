@@ -1,5 +1,7 @@
 build/
-supercache
+# Anchored: an unanchored "supercache" also matches the cmd/supercache/ directory, which
+# excluded the server's entry point from the repository entirely.
+/supercache
 *.test
 coverage.out
 *.coverprofile

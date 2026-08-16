@@ -149,6 +149,13 @@ func cmdInfo(ctx *CommandContext) error {
 		fmt.Fprintf(&b, "connected_peers:%d\r\n", n)
 		addrs := ctx.Info.PeerAddresses()
 		fmt.Fprintf(&b, "peer_addresses:%s\r\n", strings.Join(addrs, ","))
+		// Non-zero means this node's writes did not reach a peer and the two have diverged with
+		// nothing else to report it.
+		fmt.Fprintf(&b, "replication_dropped:%d\r\n", ctx.Info.ReplicationDropped())
+		fmt.Fprintf(&b, "replication_send_errors:%d\r\n", ctx.Info.ReplicationSendErrors())
+		// Non-zero means a peer's events never arrived here, so this node is missing data the
+		// rest of the cluster has.
+		fmt.Fprintf(&b, "replication_missed_events:%d\r\n", ctx.Info.ReplicationMissedEvents())
 		for i, a := range addrs {
 			fmt.Fprintf(&b, "slave%d:ip=%s,state=online\r\n", i, a)
 		}

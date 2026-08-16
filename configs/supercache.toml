@@ -15,7 +15,96 @@ peer_bind = "0.0.0.0"
 peer_port = 7379
 
 # Optional list of peer addresses as host:port; empty for standalone.
+# With auto_discover_peers on (the default) this only needs one reachable node to join from:
+# peers that authenticate are added automatically, in both directions.
 peers = ["89.167.15.232:7379"]
+
+# Founding a new cluster: launch the first node with --found-cluster on the command line, not in
+# this file. If no peer answers it then serves as that cluster's first node instead of waiting.
+# It is a launch flag rather than a setting because a setting travels inside a machine image, and
+# every node cloned from that image would found its own cluster instead of joining one.
+#
+# The flag only applies when nothing is reachable. If a peer does answer, the node syncs from it
+# as usual, so passing it by mistake cannot make a node serve an empty dataset while its cluster
+# is up.
+
+# Optional stable cluster identity. Empty (default) derives it from this node's primary IP, so an
+# instance keeps the same identity across restarts with nothing per-node baked into the image.
+# Leave it empty in any image a node may be cloned from: a pinned identity travels with the file,
+# and two nodes sharing one identity stop replicating to each other without reporting an error.
+# node_id = ""
+
+# Optional host:port other nodes should dial to reach this node's peer listener. Empty (default)
+# derives it from the primary IP and peer_port, which is what an autoscaled node needs since its
+# address is not known until boot.
+#
+# It must name an address this machine actually holds. On a host with separate public and private
+# interfaces the derived value is the private address, so cluster traffic stays off the internet
+# without any per-node setting; set this only to override that choice.
+#
+# A value belonging to another machine is taken as evidence the file was copied from that node: it
+# is dialled as a peer candidate to find the cluster, and this node advertises its own address
+# instead. An address reachable only from elsewhere, such as one in front of NAT or a load
+# balancer, is therefore not supported here.
+# advertise_addr = ""
+
+# Peer discovery from the Hetzner Cloud server inventory. On Hetzner, private networks are
+# routed rather than switched, so a broadcast never reaches another node, and the API is the only
+# inventory that updates itself when the autoscaler creates an instance.
+#
+# Discovery is off unless a token is available. Prefer the HCLOUD_TOKEN environment variable over
+# this file, so the token is not baked into an image copied to every node. A READ-ONLY token is
+# enough: this only lists servers.
+# hetzner_api_token = ""
+#
+# Scope the listing to this cluster. Without it every server in the project is a peer candidate.
+# hetzner_label_selector = "role=supercache"
+#
+# On a server attached to several private networks, pick which one's address to use. 0 (default)
+# uses the first reported.
+# hetzner_network_id = 0
+#
+# How often, in seconds, to re-list. Re-listing is what lets a node rejoin after every address it
+# knew has been replaced: its own dial loops keep retrying addresses that no longer exist, and no
+# node that no longer exists will connect back to tell it otherwise. Negative disables it.
+# discovery_interval = 60
+#
+# Servers with no private address are skipped, not reached over their public one: replication is
+# plaintext unless peer TLS is configured, and public traffic is billed.
+
+# How long, in seconds, a peer that was learned rather than configured may stay unreachable
+# before it is removed (default 3600). Negative keeps every address forever.
+#
+# Without this an autoscaled fleet accumulates the address of every instance it ever destroyed,
+# each with a goroutine redialling it and each persisted across restarts by peer_state_file.
+# Removal is recoverable: a node that comes back is learned again when it connects, and one that
+# is listed again by discovery is re-added. Addresses from this file, and any added through the
+# management API, are never removed however long they stay down. Nor is the last remaining peer,
+# so a node can never forget its way out of the cluster.
+# peer_forget_after = 3600
+
+# Tell peers this node is shutting down, so they drop its address at once instead of waiting out
+# peer_forget_after (default true). Best effort: a node killed outright announces nothing, and
+# the window above stays the backstop. A restart therefore also announces a departure, and the
+# node is learned again when it comes back; set this to false where that churn is unwanted.
+# announce_leave = true
+
+# Refetch the whole dataset when replication events from a peer are confirmed lost (default true).
+#
+# Replication carries changes, not the state they produce, so an event that never arrived is
+# missed permanently and nothing else corrects it. A skipped sequence alone is not proof: swapping
+# one link to a peer for another can deliver an event late, so each missing sequence is held for a
+# few seconds and only what fails to turn up counts. Refetching means refusing commands for its
+# duration, so it happens no more often than resync_min_interval; between attempts the node keeps
+# serving, diverged but visible through supercache_replication_resyncs_total.
+# resync_on_gap = true
+# resync_min_interval = 300
+
+# Add any peer that successfully authenticates to this node, so a node created by an autoscaler is
+# reachable without editing every existing node's configuration (default true). Peers are
+# authenticated by shared_secret either way, so this controls which authenticated nodes receive
+# replication, not who is allowed to connect.
+# auto_discover_peers = true
 
 # Optional: after peer auth, exchange PEER_ANNOUNCE so nodes learn missing peer addresses (requires restart to change).
 # gossip_peers = false
@@ -25,6 +114,17 @@ peers = ["89.167.15.232:7379"]
 
 # Optional host:port of one peer to pull a full snapshot from once at startup (empty = skip).
 bootstrap_peer = ""
+
+# Names the cluster this node belongs to; must be identical on every node in it.
+#
+# The shared secret alone cannot separate two clusters. A node built from another cluster's image
+# carries that cluster's secret, so it authenticates, joins, and takes that cluster's data with
+# it. Give each cluster its own cluster_id and that becomes impossible.
+#
+# The value is never sent on the wire: it is folded into the authentication proof, so a mismatch
+# fails exactly like a wrong secret and no node can be asked which cluster it belongs to.
+# Two nodes only apply it when both have one set, so it takes effect once the whole fleet does.
+# cluster_id = "voip-prod"
 
 # Required cluster shared secret; must be at least 32 characters.
 shared_secret = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET_AT_LEAST_32_CHARS"

@@ -40,6 +40,11 @@ func (m *testPeerMetrics) SetReplicationStats(_ int, outboundAddrs []string) {
 }
 
 func (m *testPeerMetrics) SetBootstrapInboundQueueDepth(_ int) {}
+func (m *testPeerMetrics) AddReplicationDropped(_ int64)       {}
+func (m *testPeerMetrics) AddReplicationSendError(_ int64)     {}
+func (m *testPeerMetrics) AddReplicationGap(_ int64)           {}
+func (m *testPeerMetrics) AddReplicationLate(_ int64)          {}
+func (m *testPeerMetrics) AddReplicationLost(_ int64)          {}
 
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
@@ -203,7 +208,7 @@ func TestInboundAuthAndApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce)})
+	proofPayload, err := json.Marshal(wireAuthProof{Op: wireOpAuth, Ver: PeerProtocolVersion, Hmac: peerHMACHex(secret, nonce, "")})
 	if err != nil {
 		t.Fatal(err)
 	}

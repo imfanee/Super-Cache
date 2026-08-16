@@ -54,8 +54,8 @@ func (s *Service) FinalizeGracefulShutdown(ctx context.Context, spillPath string
 	drain:
 		for {
 			select {
-			case wr := <-p.replCh:
-				pending = append(pending, replSpillEntry{Peer: p.addr, Wire: wr})
+			case f := <-p.replCh:
+				pending = append(pending, replSpillEntry{Peer: p.addr, Wire: f.wire})
 			default:
 				break drain
 			}

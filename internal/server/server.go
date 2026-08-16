@@ -41,14 +41,14 @@ type Server struct {
 	peer     *peer.Service
 	stats    *stats
 
-	listener  net.Listener
-	clientTLS *tls.Config // non-nil when Redis client port uses TLS
-	wg        sync.WaitGroup
-	listenerMu            sync.Mutex
+	listener               net.Listener
+	clientTLS              *tls.Config // non-nil when Redis client port uses TLS
+	wg                     sync.WaitGroup
+	listenerMu             sync.Mutex
 	listenerCloseRequested bool
 
-	sessionSeq atomic.Int64
-	activeConns sync.Map
+	sessionSeq   atomic.Int64
+	activeConns  sync.Map
 	shuttingDown atomic.Bool
 
 	cancelRun context.CancelFunc
@@ -58,6 +58,212 @@ type Server struct {
 	runDoneOnce sync.Once
 
 	clientReady atomic.Bool
+	// peerSeeds are dial candidates discovered from configuration at startup that are not in
+	// the peers list, currently the advertise address of the node this configuration was
+	// copied from.
+	peerSeeds []string
+
+	// discoveryEnabled reports that a provider is configured, so an empty peer list at startup
+	// is not yet evidence that this node is alone.
+	discoveryEnabled atomic.Bool
+	// discoveryListed is set once a provider has answered, successfully, at least once.
+	discoveryListed atomic.Bool
+
+	// resyncing guards against overlapping resyncs; lastResync is when the previous one began,
+	// in unix ms, which is what the minimum interval is measured from.
+	resyncing  atomic.Bool
+	lastResync atomic.Int64
+	// resyncPending records a resync that was asked for but refused, so it happens once the
+	// minimum interval has passed rather than being forgotten.
+	resyncPending atomic.Bool
+
+	runCtxMu sync.Mutex
+	runCtx   context.Context
+
+	// foundCluster allows this node to serve as the origin of a new cluster when it cannot
+	// reach any peer, instead of waiting indefinitely for one.
+	foundCluster atomic.Bool
+}
+
+// SetFoundCluster permits this node to found a new cluster when no peer is reachable.
+//
+// It is a launch-time decision rather than a configuration value on purpose: a configuration
+// file travels with a machine image, so a node cloned from one carrying this would found its own
+// cluster instead of joining, and a fleet would fragment one instance at a time.
+func (s *Server) SetFoundCluster(v bool) {
+	s.foundCluster.Store(v)
+}
+
+func (s *Server) setRunContext(ctx context.Context) {
+	s.runCtxMu.Lock()
+	defer s.runCtxMu.Unlock()
+	s.runCtx = ctx
+}
+
+func (s *Server) runContext() context.Context {
+	s.runCtxMu.Lock()
+	defer s.runCtxMu.Unlock()
+	return s.runCtx
+}
+
+// bootstrapSources returns every address this node could pull a snapshot from: the configured
+// bootstrap_peer and peers, plus any seed discovered from a configuration copied off another
+// node. An empty result means this node knows of nowhere to sync from.
+func (s *Server) bootstrapSources(c *config.Config) []string {
+	out := config.BootstrapCandidates(c)
+	// Peers learned after startup, from discovery or from a node that connected here, are
+	// snapshot sources too. Without them a node whose configured addresses have all been
+	// replaced would keep retrying the dead ones and never sync.
+	if s.peer != nil {
+		out = append(out, s.peer.ConfigPeerAddrs()...)
+	}
+	seen := make(map[string]struct{}, len(out))
+	for _, a := range out {
+		seen[config.NormalizePeerAddr(a)] = struct{}{}
+	}
+	for _, seed := range s.peerSeeds {
+		if _, ok := seen[config.NormalizePeerAddr(seed)]; ok {
+			continue
+		}
+		out = append(out, seed)
+		seen[config.NormalizePeerAddr(seed)] = struct{}{}
+	}
+	return out
+}
+
+// bootstrapUntilSynced pulls a snapshot, retrying until one source answers or the server stops.
+//
+// It does not give up. A node that cannot reach any source is far more likely to be starting
+// during a brief outage than to be the founder of a new cluster, and the two are impossible to
+// tell apart from here. Exiting would crash-loop an autoscaled node whose peers are briefly
+// unreachable, and serving would hand clients an empty dataset; staying up and refusing
+// commands with LOADING is the only option that cannot lose data or hide the problem.
+func (s *Server) bootstrapUntilSynced(ctx context.Context) {
+	depth := s.config().BootstrapQueueDepth
+	if depth < 1 {
+		depth = 1
+	}
+	const (
+		minBackoff = 500 * time.Millisecond
+		maxBackoff = 30 * time.Second
+	)
+	backoff := minBackoff
+	for attempt := 1; ; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		candidates := s.bootstrapSources(s.config())
+		if len(candidates) == 0 {
+			// Discovery is the only thing that could still name a source. Serving before it has
+			// answered would mean handing clients an empty store on a node that may well be
+			// joining an established cluster; an answer naming nobody is the only evidence that
+			// this node really is alone.
+			if s.discoveryListed.Load() {
+				s.stats.setBootstrapState("standalone")
+				s.clientReady.Store(true)
+				slog.Info("no peers exist; serving as a standalone node")
+				return
+			}
+			slog.Info("waiting for peer discovery before serving clients", "retry_in", backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
+		}
+		err := s.bootstrapOnce(ctx, candidates, depth)
+		if err == nil {
+			s.stats.setBootstrapState("ready")
+			s.clientReady.Store(true)
+			keysLoaded := s.store.DBSize()
+			slog.Info(fmt.Sprintf("Bootstrap complete. Serving clients. Keys loaded: %d.", keysLoaded),
+				"node_id", s.stats.NodeID(),
+				"db_size", keysLoaded,
+				"keys_applied", s.stats.BootstrapKeysApplied(),
+			)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// Nothing answered, and this node was launched as the origin of a new cluster. The
+		// addresses it is configured with belong to whatever it was cloned from, and waiting for
+		// them would mean never serving. A failure after a link was established is different:
+		// the cluster is there and reachable, so this keeps retrying.
+		if errors.Is(err, errNoPeerLink) && s.foundCluster.Load() {
+			s.stats.setBootstrapState("standalone")
+			s.clientReady.Store(true)
+			slog.Warn("no peer was reachable and this node was launched to found a new cluster; "+
+				"serving as its first node with an empty dataset",
+				"unreachable_sources", len(candidates))
+			return
+		}
+		slog.Error("bootstrap failed; this node will not serve clients until it syncs",
+			"attempt", attempt, "sources", len(candidates), "retry_in", backoff, "err", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// bootstrapOnce runs a single bootstrap attempt across all sources.
+//
+// Inbound replication is buffered only for the duration of the attempt. Holding the buffer open
+// across the wait between attempts would let it overflow during a long outage, and a failed
+// attempt already empties the store, so the next attempt starts from a clean slate either way.
+func (s *Server) bootstrapOnce(ctx context.Context, candidates []string, depth int) error {
+	s.peer.SetBootstrapInboundActive(true, depth)
+	defer s.peer.SetBootstrapInboundActive(false, 0)
+	if err := s.awaitPeerLink(ctx); err != nil {
+		return err
+	}
+	if err := s.peer.PullSnapshotFailover(ctx, candidates); err != nil {
+		return err
+	}
+	return s.peer.DrainBootstrapInboundQueue(ctx)
+}
+
+// awaitPeerLink blocks until this node has at least one peer link, so that replication is
+// already being buffered before the snapshot is taken.
+//
+// Without this the snapshot can complete while no link exists, and every write the source makes
+// until the link comes up is missed: it is too late for the snapshot and too early for the
+// buffer. Nothing detects the loss, because no receiver reads the sequence numbers that would
+// reveal it. Buffering is already active when this is called, so the moment a link appears its
+// frames are queued rather than applied.
+// errNoPeerLink means no peer could be reached at all, as opposed to a sync that started and
+// then failed. Only the former justifies founding a new cluster: if a link was established the
+// cluster exists and this node must keep trying rather than declare itself its origin.
+var errNoPeerLink = errors.New("no peer link established")
+
+func (s *Server) awaitPeerLink(ctx context.Context) error {
+	const (
+		wait = 15 * time.Second
+		tick = 50 * time.Millisecond
+	)
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	for {
+		if s.peer.LiveLinkCount() > 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w within %s; cannot sync without one", errNoPeerLink, wait)
+		case <-time.After(tick):
+		}
+	}
 }
 
 // New constructs a Server from validated configuration (store, registry, pub/sub, metrics).
@@ -69,15 +275,17 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	nodeID := randomNodeID()
+	nodeID, advertise, seeds := resolveIdentity(cfg)
 	stats := newStats(nodeID, cfg.ClientPort)
 	ps := peer.NewService(cfg, st, stats, stats, nodeID)
+	ps.SetAdvertiseAddr(advertise)
 	s := &Server{
 		store:       st,
 		registry:    commands.NewRegistry(),
 		pubsub:      client.NewSubscriptionManager(),
 		peer:        ps,
 		stats:       stats,
+		peerSeeds:   seeds,
 		runFinished: make(chan struct{}),
 	}
 	s.cfg.Store(cfg)
@@ -205,33 +413,46 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("peer listen timeout")
 	}
 
-	candidates := config.BootstrapCandidates(c)
-	if len(candidates) > 0 {
+	// Dial candidates found in configuration but absent from the peers list. AddPeer validates
+	// the address, discards it if it is this node, and skips it if it is already configured, so
+	// a seed that turns out to be redundant costs nothing.
+	for _, seed := range s.peerSeeds {
+		if err := s.peer.AddPeer(seed); err != nil {
+			slog.Debug("configured self address not added as peer", "addr", seed, "err", err)
+			continue
+		}
+		slog.Info("dialing peer candidate taken from configured advertise_addr", "addr", seed)
+	}
+
+	// Every address this node knows of is a possible snapshot source. A node that knows a peer
+	// must never begin serving from an empty store: it would answer misses for every key the
+	// cluster holds, which reads as data loss to a client and is indistinguishable from a cache
+	// that has simply expired.
+	// Discovery starts before bootstrap so a node whose configured addresses are all stale can
+	// still find a snapshot source rather than waiting out the retry loop with nowhere to sync
+	// from.
+	// Addresses from the file are the operator's intent and are never removed automatically,
+	// however long they stay unreachable.
+	s.setRunContext(ctx)
+	s.peer.SetResyncRequester(s)
+	s.peer.NoteConfigPeers(c.Peers)
+	go s.runPeerReaper(ctx)
+	go s.runResyncDeferred(ctx)
+
+	if providers := discoveryProviders(c); len(providers) > 0 {
+		s.discoveryEnabled.Store(true)
+		go s.runPeerDiscovery(ctx, providers)
+	}
+
+	if len(s.bootstrapSources(c)) == 0 && !s.discoveryEnabled.Load() {
+		// Nowhere to sync from and nowhere new to look, so this node is the whole cluster as far
+		// as it can tell and its own store is authoritative.
+		s.clientReady.Store(true)
+	} else {
 		s.clientReady.Store(false)
 		s.stats.setBootstrapState("syncing")
-		depth := c.BootstrapQueueDepth
-		if depth < 1 {
-			depth = 1
-		}
-		s.peer.SetBootstrapInboundActive(true, depth)
-		if err := s.peer.PullSnapshotFailover(ctx, candidates); err != nil {
-			s.peer.SetBootstrapInboundActive(false, 0)
-			return fmt.Errorf("bootstrap: %w", err)
-		}
-		if err := s.peer.DrainBootstrapInboundQueue(ctx); err != nil {
-			s.peer.SetBootstrapInboundActive(false, 0)
-			return err
-		}
-		s.peer.SetBootstrapInboundActive(false, 0)
-		s.stats.setBootstrapState("ready")
-		keysLoaded := s.store.DBSize()
-		slog.Info(fmt.Sprintf("Bootstrap complete. Serving clients. Keys loaded: %d.", keysLoaded),
-			"node_id", s.stats.NodeID(),
-			"db_size", keysLoaded,
-			"keys_applied", s.stats.BootstrapKeysApplied(),
-		)
+		go s.bootstrapUntilSynced(ctx)
 	}
-	s.clientReady.Store(true)
 	s.runPrometheusMetrics(ctx)
 
 	addr := fmt.Sprintf("%s:%d", c.ClientBind, c.ClientPort)
@@ -433,6 +654,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.peer.CloseListener()
 	}
 	if deadlineReached("close listeners") {
+		return nil
+	}
+
+	// Tell peers this node is leaving while its links are still open. Everything after this
+	// closes them, and an announcement has nowhere to travel once they are gone. Queued
+	// replication is flushed first so a peer receives this node's last writes before being told
+	// it is going: acting on the announcement costs that peer its connection here.
+	if s.peer != nil && s.config().AnnounceLeaveEnabled() {
+		s.peer.DrainReplicationOutbound(shutdownCtx)
+		s.peer.AnnounceLeave()
+	}
+	if deadlineReached("announce leave") {
 		return nil
 	}
 

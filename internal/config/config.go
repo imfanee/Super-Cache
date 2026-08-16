@@ -30,10 +30,34 @@ type Config struct {
 	PeerPort int `toml:"peer_port" yaml:"peer_port"`
 	// Peers is the list of peer addresses as host:port strings.
 	Peers []string `toml:"peers" yaml:"peers"`
+	// NodeID optionally pins this node's cluster identity. Empty (the default) derives a
+	// stable identity from the node's primary IP, so an instance keeps one identity across
+	// restarts with no per-node configuration baked into the machine image.
+	NodeID string `toml:"node_id" yaml:"node_id"`
+	// AdvertiseAddr is the host:port other nodes should dial to reach this node's peer
+	// listener. Empty (the default) derives it from the primary IP and PeerPort, which is
+	// what an autoscaled node needs since its address is unknown until boot.
+	//
+	// It must name an address this machine holds. A value belonging to another machine is
+	// taken as evidence that this configuration was copied from that node: it becomes a peer
+	// candidate and this node advertises its own address instead. An address reachable only
+	// from elsewhere, such as one behind NAT or a load balancer, is therefore not supported.
+	AdvertiseAddr string `toml:"advertise_addr" yaml:"advertise_addr"`
 	// BootstrapPeer is an optional host:port to pull a full snapshot from once at startup (empty skips).
 	BootstrapPeer string `toml:"bootstrap_peer" yaml:"bootstrap_peer"`
 	// SharedSecret is the cluster authentication secret; required and at least 32 characters.
 	SharedSecret string `toml:"shared_secret" yaml:"shared_secret"`
+	// ClusterID names the cluster this node belongs to, and must match on every node in it.
+	//
+	// It exists because the shared secret alone cannot separate two clusters: a node built from
+	// another cluster's image carries that secret, so it authenticates and joins, taking the
+	// other cluster's data with it. Setting a different ClusterID makes that impossible.
+	//
+	// The value is never sent on the wire. It is folded into the authentication proof, so a
+	// mismatch fails exactly as a wrong secret does and no node can be asked which cluster it
+	// belongs to. Protection only applies between nodes that both set one, so it takes effect
+	// once the whole fleet has it.
+	ClusterID string `toml:"cluster_id" yaml:"cluster_id"`
 	// MaxMemory is the maximum memory limit, e.g. 2gb, 512mb, or 0 for unlimited.
 	MaxMemory string `toml:"max_memory" yaml:"max_memory"`
 	// MaxMemoryPolicy selects eviction behavior when memory is full.
@@ -71,6 +95,59 @@ type Config struct {
 	MgmtTCPPort int `toml:"mgmt_tcp_port" yaml:"mgmt_tcp_port"`
 	// GossipPeers enables PEER_ANNOUNCE after mesh handshake so nodes learn peer addresses (P2.4).
 	GossipPeers bool `toml:"gossip_peers" yaml:"gossip_peers"`
+	// AutoDiscoverPeers makes a node add any peer that successfully authenticates to it, so a
+	// node created by an autoscaler is reachable without editing every existing node's config.
+	// Enabled by default; set to false to keep membership strictly to the configured list.
+	// Peers are still authenticated by shared secret either way, so this changes which
+	// authenticated nodes receive replication, not who may connect.
+	AutoDiscoverPeers *bool `toml:"auto_discover_peers" yaml:"auto_discover_peers"`
+	// DiscoveryInterval is how often, in seconds, peers are re-listed from discovery providers.
+	// 0 uses the default; negative disables periodic discovery. Re-listing matters because a
+	// node whose known addresses have all been replaced would otherwise stay isolated forever:
+	// its own dial loops keep retrying addresses that no longer exist and nothing ever tells it
+	// about the machines that took their place.
+	DiscoveryInterval int `toml:"discovery_interval" yaml:"discovery_interval"`
+	// HetznerAPIToken enables discovery from the Hetzner Cloud server inventory. Empty falls
+	// back to the HCLOUD_TOKEN environment variable, which keeps the token out of an image.
+	// A read-only token is sufficient; this only lists servers.
+	HetznerAPIToken string `toml:"hetzner_api_token" yaml:"hetzner_api_token"`
+	// HetznerLabelSelector restricts that listing, for example "role=supercache". Empty lists
+	// every server in the project.
+	HetznerLabelSelector string `toml:"hetzner_label_selector" yaml:"hetzner_label_selector"`
+	// HetznerNetworkID selects which private network to take an address from on a server
+	// attached to more than one. 0 uses the first reported.
+	HetznerNetworkID int64 `toml:"hetzner_network_id" yaml:"hetzner_network_id"`
+	// HetznerAPIURL overrides the API root, for an outbound proxy or a test double. Empty uses
+	// the real API.
+	HetznerAPIURL string `toml:"hetzner_api_url" yaml:"hetzner_api_url"`
+	// AnnounceLeave makes a node tell its peers it is shutting down, so they drop its address
+	// immediately instead of waiting out PeerForgetAfter. Enabled by default.
+	//
+	// It is best effort: a node killed outright announces nothing, and the unreachability
+	// window remains the backstop. Set to false where a restart should leave membership
+	// untouched, at the cost of every rolling restart being invisible to peers until they
+	// notice on their own.
+	AnnounceLeave *bool `toml:"announce_leave" yaml:"announce_leave"`
+	// ResyncOnGap makes a node refetch the dataset when replication events from a peer are
+	// confirmed lost. Enabled by default.
+	//
+	// Replication carries changes rather than the state they produce, so an event that never
+	// arrived is missed permanently and nothing else will correct it. Refetching costs a period
+	// of refusing commands, which is why it only happens once loss is confirmed and no more
+	// often than ResyncMinInterval.
+	ResyncOnGap *bool `toml:"resync_on_gap" yaml:"resync_on_gap"`
+	// ResyncMinInterval is the shortest time, in seconds, between two resyncs. 0 uses the
+	// default. It bounds the cost of a fault that keeps producing loss: without it such a node
+	// would refetch continuously and never serve.
+	ResyncMinInterval int `toml:"resync_min_interval" yaml:"resync_min_interval"`
+	// PeerForgetAfter is how long, in seconds, a peer that was learned rather than configured
+	// may stay unreachable before it is removed. 0 uses the default; negative keeps every
+	// address forever, which is the behaviour before this setting existed.
+	//
+	// Without this an autoscaled fleet accumulates the address of every instance it has ever
+	// destroyed, each with a goroutine redialling it. Removal is recoverable: a node that
+	// returns is learned again when it connects.
+	PeerForgetAfter int `toml:"peer_forget_after" yaml:"peer_forget_after"`
 	// PeerStateFile is an optional JSON path to persist merged peer list across restarts (P2.5).
 	PeerStateFile string `toml:"peer_state_file" yaml:"peer_state_file"`
 	// ReplShutdownSpillPath is the JSON file written when pending outbound replication cannot be flushed before exit.
@@ -157,6 +234,15 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.HeartbeatTimeout == 0 {
 		cfg.HeartbeatTimeout = DefaultHeartbeatTimeout
 	}
+	if cfg.DiscoveryInterval == 0 {
+		cfg.DiscoveryInterval = DefaultDiscoveryInterval
+	}
+	if cfg.PeerForgetAfter == 0 {
+		cfg.PeerForgetAfter = DefaultPeerForgetAfter
+	}
+	if cfg.ResyncMinInterval == 0 {
+		cfg.ResyncMinInterval = DefaultResyncMinInterval
+	}
 	if cfg.MgmtSocket == "" {
 		cfg.MgmtSocket = DefaultMgmtSocket
 	}
@@ -182,6 +268,9 @@ func ApplyDefaults(cfg *Config) {
 
 // Validate checks all configuration constraints and returns an error describing violations.
 func (c *Config) Validate() error {
+	if err := validateClusterID(c.ClusterID); err != nil {
+		return err
+	}
 	if len(strings.TrimSpace(c.SharedSecret)) < 32 {
 		return fmt.Errorf("shared_secret must be non-empty and at least 32 characters")
 	}
@@ -215,6 +304,14 @@ func (c *Config) Validate() error {
 		if err := ValidatePeerAddr(c.BootstrapPeer); err != nil {
 			return fmt.Errorf("bootstrap_peer: %w", err)
 		}
+	}
+	if strings.TrimSpace(c.AdvertiseAddr) != "" {
+		if err := ValidatePeerAddr(c.AdvertiseAddr); err != nil {
+			return fmt.Errorf("advertise_addr: %w", err)
+		}
+	}
+	if err := validateNodeID(c.NodeID); err != nil {
+		return fmt.Errorf("node_id: %w", err)
 	}
 	if err := validateMaxMemoryString(c.MaxMemory); err != nil {
 		return fmt.Errorf("max_memory: %w", err)
@@ -367,6 +464,96 @@ func ValidatePeerAddr(s string) error {
 	return nil
 }
 
+// AutoDiscoverPeersEnabled reports whether this node adds peers that authenticate to it.
+// Unset means enabled, so an existing config file keeps working and gains the behaviour.
+// AnnounceLeaveEnabled reports whether this node tells peers it is shutting down. Absent from
+// the file means enabled: a departure nobody is told about is the case this exists to fix.
+// ResyncOnGapEnabled reports whether confirmed replication loss triggers a refetch. Absent from
+// the file means enabled: silent divergence is the condition this exists to end.
+func (c *Config) ResyncOnGapEnabled() bool {
+	if c == nil || c.ResyncOnGap == nil {
+		return true
+	}
+	return *c.ResyncOnGap
+}
+
+func (c *Config) AnnounceLeaveEnabled() bool {
+	if c == nil || c.AnnounceLeave == nil {
+		return true
+	}
+	return *c.AnnounceLeave
+}
+
+func (c *Config) AutoDiscoverPeersEnabled() bool {
+	if c == nil || c.AutoDiscoverPeers == nil {
+		return true
+	}
+	return *c.AutoDiscoverPeers
+}
+
+// NormalizePeerAddr returns a canonical comparable form of a peer address so that the same
+// endpoint written different ways (IPv4 in 16-byte form, mixed-case hostname, bracketed IPv6)
+// compares equal. Used to recognise this node's own address in a learned peer list and to
+// avoid registering the same peer twice. Unparseable input is returned trimmed, unchanged.
+func NormalizePeerAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			host = v4.String()
+		} else {
+			host = ip.String()
+		}
+	} else {
+		host = strings.ToLower(host)
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// MaxNodeIDLen bounds an operator-supplied node_id. Node IDs travel in every handshake and
+// are used as map keys, so they stay short and printable.
+const MaxNodeIDLen = 128
+
+// MaxClusterIDLen bounds cluster_id. It is folded into every authentication proof, so there is
+// no reason for it to be long.
+const MaxClusterIDLen = 128
+
+func validateClusterID(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if len(s) > MaxClusterIDLen {
+		return fmt.Errorf("cluster_id must be at most %d characters", MaxClusterIDLen)
+	}
+	for _, r := range s {
+		if r < 0x21 || r > 0x7e {
+			return fmt.Errorf("cluster_id must contain only printable non-space ASCII")
+		}
+	}
+	return nil
+}
+
+// validateNodeID accepts an empty value (identity is derived) or a short printable token.
+func validateNodeID(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if len(s) > MaxNodeIDLen {
+		return fmt.Errorf("must be at most %d characters", MaxNodeIDLen)
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("must not contain control characters")
+		}
+	}
+	return nil
+}
+
 func validateMaxMemoryString(s string) error {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if s == "0" || s == "" {
@@ -478,8 +665,41 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	if a.SharedSecret != b.SharedSecret {
 		blocked = append(blocked, "shared_secret")
 	}
+	if strings.TrimSpace(a.ClusterID) != strings.TrimSpace(b.ClusterID) {
+		blocked = append(blocked, "cluster_id")
+	}
 	if a.MgmtSocket != b.MgmtSocket {
 		blocked = append(blocked, "mgmt_socket")
+	}
+	// The discovery loop reads its interval and provider settings once when it starts, so a
+	// change to any of them only takes effect on restart. Reporting them as hot would claim an
+	// effect that never happens.
+	if a.DiscoveryInterval != b.DiscoveryInterval {
+		blocked = append(blocked, "discovery_interval")
+	}
+	if a.HetznerAPIToken != b.HetznerAPIToken {
+		blocked = append(blocked, "hetzner_api_token")
+	}
+	if strings.TrimSpace(a.HetznerLabelSelector) != strings.TrimSpace(b.HetznerLabelSelector) {
+		blocked = append(blocked, "hetzner_label_selector")
+	}
+	if a.HetznerNetworkID != b.HetznerNetworkID {
+		blocked = append(blocked, "hetzner_network_id")
+	}
+	if strings.TrimSpace(a.HetznerAPIURL) != strings.TrimSpace(b.HetznerAPIURL) {
+		blocked = append(blocked, "hetzner_api_url")
+	}
+	if a.PeerForgetAfter != b.PeerForgetAfter {
+		blocked = append(blocked, "peer_forget_after")
+	}
+	if a.AnnounceLeaveEnabled() != b.AnnounceLeaveEnabled() {
+		hot = append(hot, "announce_leave")
+	}
+	if a.ResyncOnGapEnabled() != b.ResyncOnGapEnabled() {
+		hot = append(hot, "resync_on_gap")
+	}
+	if a.ResyncMinInterval != b.ResyncMinInterval {
+		hot = append(hot, "resync_min_interval")
 	}
 	if strings.TrimSpace(a.MgmtTCPBind) != strings.TrimSpace(b.MgmtTCPBind) {
 		blocked = append(blocked, "mgmt_tcp_bind")
@@ -496,6 +716,14 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if strings.TrimSpace(a.BootstrapPeer) != strings.TrimSpace(b.BootstrapPeer) {
 		blocked = append(blocked, "bootstrap_peer")
+	}
+	// Identity and advertisement are established during the handshake of every live peer
+	// link, so changing them at runtime would leave existing links keyed on stale values.
+	if strings.TrimSpace(a.NodeID) != strings.TrimSpace(b.NodeID) {
+		blocked = append(blocked, "node_id")
+	}
+	if strings.TrimSpace(a.AdvertiseAddr) != strings.TrimSpace(b.AdvertiseAddr) {
+		blocked = append(blocked, "advertise_addr")
 	}
 	if a.BootstrapQueueDepth != b.BootstrapQueueDepth {
 		blocked = append(blocked, "bootstrap_queue_depth")
@@ -559,6 +787,9 @@ func diffConfigs(a, b *Config) (changed []string, blocked []string) {
 	}
 	if a.GossipPeers != b.GossipPeers {
 		blocked = append(blocked, "gossip_peers")
+	}
+	if a.AutoDiscoverPeersEnabled() != b.AutoDiscoverPeersEnabled() {
+		hot = append(hot, "auto_discover_peers")
 	}
 	if strings.TrimSpace(a.PeerStateFile) != strings.TrimSpace(b.PeerStateFile) {
 		blocked = append(blocked, "peer_state_file")
@@ -629,30 +860,35 @@ func MergePeerLists(base, extra []string) []string {
 	return out
 }
 
-// BootstrapCandidates returns ordered bootstrap sources when bootstrap_peer is set: that address first,
-// then remaining peers as failover (P2.6). If bootstrap_peer is empty, no bootstrap is performed.
+// BootstrapCandidates returns ordered bootstrap sources: bootstrap_peer first when set, then the
+// configured peers as failover (P2.6).
+//
+// Peers are candidates even when bootstrap_peer is empty. A node that knows a peer but has no
+// snapshot source used to start with an empty store and answer misses for every key the cluster
+// holds, which is wrong for any node joining an existing cluster — and an autoscaled node never
+// has a bootstrap_peer, since its peers were not known when its image was built.
+//
+// An empty result means this node knows of nowhere to sync from and is therefore standalone.
 func BootstrapCandidates(c *Config) []string {
 	if c == nil {
 		return nil
 	}
-	primary := strings.TrimSpace(c.BootstrapPeer)
-	if primary == "" {
-		return nil
-	}
 	var out []string
 	seen := make(map[string]struct{})
-	out = append(out, primary)
-	seen[primary] = struct{}{}
+	add := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			return
+		}
+		if _, ok := seen[addr]; ok {
+			return
+		}
+		out = append(out, addr)
+		seen[addr] = struct{}{}
+	}
+	add(c.BootstrapPeer)
 	for _, p := range c.Peers {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		out = append(out, p)
-		seen[p] = struct{}{}
+		add(p)
 	}
 	return out
 }
